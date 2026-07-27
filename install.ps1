@@ -8,7 +8,7 @@ $installDir = Join-Path $HOME "roninclips"
 
 if (-not (Test-Path $installDir)) {
     Write-Host "[1/4] Cloning RoninClips repository to $installDir..." -ForegroundColor Yellow
-    git clone https://github.com/christianlascuna/roninclips.git $installDir
+    git clone https://github.com/clascuna556171/roninclips.git $installDir
 } else {
     Write-Host "[1/4] RoninClips directory exists at $installDir. Pulling updates..." -ForegroundColor Yellow
     Set-Location $installDir

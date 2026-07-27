@@ -30,3 +30,5 @@ Thumbs.db
 /storage/logs/*.log
 *.mp3
 *.mp4
+__pycache__/
+*.pyc

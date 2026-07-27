@@ -13,7 +13,7 @@ You can install and launch RoninClips using any of the single terminal command m
 ### Method A: One-Line Terminal Command (PowerShell)
 Paste this command into your PowerShell terminal:
 ```powershell
-iwr -useb https://raw.githubusercontent.com/your-username/roninclips/main/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/clascuna556171/roninclips/main/install.ps1 | iex
 ```
 
 ---
@@ -32,7 +32,7 @@ roninclips
 ---
 
 ### Method C: One-Click Local Script
-1. Clone the repository: `git clone https://github.com/your-username/roninclips.git`
+1. Clone the repository: `git clone https://github.com/clascuna556171/roninclips.git`
 2. Double-click `setup.bat` to install.
 3. Double-click `start.bat` to run!
 
