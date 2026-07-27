@@ -1,0 +1,9 @@
+google-genai
+mysql-connector-python
+opencv-python
+mediapipe
+python-dotenv
+numpy
+faster-whisper
+groq
+Pillow
