@@ -158,4 +158,58 @@ class VideoController extends Controller
         
         return redirect()->back()->with('success', 'Video and all clips removed successfully.');
     }
+
+    public function openExplorer($id)
+    {
+        $clip = \App\Models\VideoClip::findOrFail($id);
+        if ($clip->output_path && file_exists(base_path($clip->output_path))) {
+            $absPath = str_replace('/', '\\', base_path($clip->output_path));
+            if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
+                pclose(popen('explorer.exe /select,"' . $absPath . '"', 'r'));
+            }
+            return response()->json(['success' => true]);
+        }
+        return response()->json(['error' => 'File not found on disk.'], 404);
+    }
+    public function getTranscript($id)
+    {
+        $clip = \App\Models\VideoClip::findOrFail($id);
+        $jsonPath = storage_path("app/clip_{$clip->id}_words.json");
+        if (file_exists($jsonPath)) {
+            $words = json_decode(file_get_contents($jsonPath), true);
+            return response()->json(['success' => true, 'words' => $words]);
+        }
+        return response()->json(['error' => 'Transcript not found. Please reprocess the video to generate word-level timings.'], 404);
+    }
+
+    public function reRenderClip(Request $request, $id)
+    {
+        $clip = \App\Models\VideoClip::findOrFail($id);
+        
+        $request->validate([
+            'words' => 'required|array'
+        ]);
+
+        // Save updated words
+        $jsonPath = storage_path("app/clip_{$clip->id}_words.json");
+        file_put_contents($jsonPath, json_encode($request->words, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+
+        // Update clip status
+        $clip->status = 'rendering';
+        $clip->save();
+
+        // Run the python re-render script
+        $pythonPath = 'python';
+        $scriptPath = base_path('processor/re_render_clip.py');
+        $logFile = storage_path('logs/re_render_' . $clip->id . '.log');
+        
+        if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
+            pclose(popen('start /B cmd /c "python "' . escapeshellarg($scriptPath) . '" ' . $clip->id . ' > "' . $logFile . '" 2>&1"', 'r'));
+        } else {
+            $cmd = escapeshellarg($pythonPath) . ' ' . escapeshellarg($scriptPath) . ' ' . escapeshellarg($clip->id);
+            exec($cmd . ' > ' . escapeshellarg($logFile) . ' 2>&1 &');
+        }
+
+        return response()->json(['success' => true]);
+    }
 }
