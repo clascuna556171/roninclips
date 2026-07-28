@@ -650,6 +650,11 @@ Transcript:
             print(f"  Found {len(all_words)} words for captions.")
 
             if all_words:
+                words_json_path = os.path.join(temp_dir, f"clip_{sc['id']}_words.json")
+                with open(words_json_path, 'w', encoding='utf-8') as f:
+                    json.dump(all_words, f, ensure_ascii=False, indent=2)
+                print(f"  💾 Saved transcript JSON for editor: {words_json_path}")
+
                 if SETTINGS['output_format'] == '9:16':
                     sub_w = 1080
                     sub_h = 1920
