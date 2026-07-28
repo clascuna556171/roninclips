@@ -37,6 +37,31 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* ─── Global Icon Styling ─── */
+.icon-lucide, svg.lucide {
+  width: 1.1em;
+  height: 1.1em;
+  stroke-width: 2.2px;
+  vertical-align: -0.15em;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.icon-sm {
+  width: 14px;
+  height: 14px;
+}
+
+.icon-md {
+  width: 18px;
+  height: 18px;
+}
+
+.icon-lg {
+  width: 22px;
+  height: 22px;
+}
+
 /* Split View Layout */
 .app-layout {
   display: flex;
@@ -99,31 +124,32 @@ body {
 
 /* Hero TUI Mockup (Terminal User Interface) */
 .hero-tui-mockup {
-  background-color: var(--color-surface-dark); /* Now light */
-  color: #201d1d; /* Now dark */
-  padding: 32px;
+  background-color: transparent;
+  color: #fdfcfc;
+  padding: 0 0 24px 0;
   font-family: var(--font-mono);
-  margin: -32px -32px 32px -32px;
+  margin: 0 0 24px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .hero-tui-mockup .display-xl {
-  color: #201d1d;
+  color: #ffffff;
 }
 
 .hero-tui-mockup .body-md {
-  color: #646262;
+  color: #9ca3af;
 }
 
 .hero-tui-mockup .body-strong {
-  color: #201d1d;
+  color: #38bdf8;
 }
 
 .tui-ascii {
-  color: #201d1d;
+  color: #38bdf8;
   white-space: pre;
   font-size: 12px;
   font-weight: bold;
-  margin-bottom: 24px;
+  margin-bottom: 20px;
   line-height: 1.1;
 }
 
@@ -159,54 +185,57 @@ body {
 }
 
 .button-primary {
-  background-color: var(--color-ink); /* Now fdfcfc */
-  color: #201d1d; /* Now dark text on light button */
+  background-color: #ffffff;
+  color: #09090b;
   border: none;
-  padding: 4px 20px;
-  border-radius: var(--rounded-sm);
+  padding: 12px 24px;
+  border-radius: 6px;
   font-family: var(--font-mono);
-  font-weight: 700;
-  font-size: 16px;
-  line-height: 2;
+  font-weight: 800;
+  font-size: 15px;
+  line-height: 1.2;
   cursor: pointer;
-  transition: all 0.3s ease;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
   min-height: 48px;
   letter-spacing: 0.05em;
-  box-shadow: 0 0 10px rgba(253, 252, 252, 0.15);
+  box-shadow: 0 4px 16px rgba(255, 255, 255, 0.2);
 }
 
 .button-primary:hover {
   background-color: #ffffff;
-  box-shadow: 0 0 20px rgba(255, 255, 255, 0.4);
-  transform: translateY(-2px);
+  box-shadow: 0 0 24px rgba(255, 255, 255, 0.45);
+  transform: scale(1.02);
 }
 
 .button-primary:active {
-  background-color: #e5e5e5;
-  transform: translateY(0);
+  background-color: #e4e4e7;
+  transform: scale(0.98);
 }
 
 .button-danger-sm {
-  background-color: transparent;
-  color: var(--color-hairline-strong);
-  border: 1px solid var(--color-border);
-  padding: 2px 6px;
-  border-radius: var(--rounded-sm);
+  background: rgba(255, 255, 255, 0.04);
+  color: #9ca3af;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 5px 12px;
+  border-radius: 6px;
   font-family: var(--font-mono);
-  font-weight: 700;
+  font-weight: 600;
   font-size: 12px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   transition: all 0.2s ease;
 }
 
 .button-danger-sm:hover {
-  background-color: rgba(239, 68, 68, 0.1);
-  color: var(--color-danger);
-  border-color: rgba(239, 68, 68, 0.3);
+  background-color: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+  border-color: rgba(239, 68, 68, 0.4);
 }
 
 /* ─── Dashboard Layout ─── */
@@ -460,15 +489,15 @@ body {
 /* ─── Radio Buttons ─── */
 .radio-group {
   display: flex;
-  gap: 12px;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .radio-label {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  flex: 1;
-  padding: 8px 0;
+  padding: 6px 0;
   cursor: pointer;
 }
 
@@ -476,11 +505,20 @@ body {
   display: none;
 }
 
+.radio-status {
+  flex-shrink: 0;
+  white-space: nowrap;
+  user-select: none;
+  font-family: var(--font-mono);
+  display: inline-block;
+}
+
 .radio-status::before {
   content: "( )";
   font-family: var(--font-mono);
   color: var(--color-ink);
   font-size: 14px;
+  white-space: nowrap;
 }
 
 .radio-label input[type="radio"]:checked ~ .radio-status::before {
@@ -520,7 +558,7 @@ body {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 8px 0;
+  padding: 6px 0;
   cursor: pointer;
 }
 
@@ -528,11 +566,20 @@ body {
   display: none;
 }
 
+.toggle-status {
+  flex-shrink: 0;
+  white-space: nowrap;
+  user-select: none;
+  font-family: var(--font-mono);
+  display: inline-block;
+}
+
 .toggle-status::before {
   content: "[ ]";
   font-family: var(--font-mono);
   color: var(--color-ink);
   font-size: 14px;
+  white-space: nowrap;
 }
 
 .toggle-checkbox:checked ~ .toggle-status::before {
@@ -984,22 +1031,29 @@ body {
 
 .stat-card {
   background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--color-border);
-  border-radius: var(--rounded-sm);
-  padding: 16px 20px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 20px 24px;
   display: flex;
-  align-items: center;
-  gap: 16px;
-  transition: transform 0.2s ease, border-color 0.2s ease;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  position: relative;
+  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .stat-card:hover {
   transform: translateY(-2px);
-  border-color: rgba(255, 255, 255, 0.25);
+  border-color: rgba(59, 130, 246, 0.4);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
 }
 
 .stat-icon {
-  font-size: 24px;
+  position: absolute;
+  top: 18px;
+  right: 20px;
+  font-size: 22px;
+  opacity: 0.85;
 }
 
 .stat-data {
@@ -1008,19 +1062,35 @@ body {
 }
 
 .stat-value {
-  font-size: 20px;
-  font-weight: 700;
+  font-size: 32px;
+  font-weight: 800;
   font-family: var(--font-mono);
-  color: var(--color-ink);
-  line-height: 1.2;
+  color: #ffffff;
+  line-height: 1;
+  letter-spacing: -0.02em;
 }
 
 .stat-label {
   font-size: 11px;
-  color: var(--color-hairline-strong);
+  color: #9ca3af;
   font-family: var(--font-mono);
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.08em;
+  margin-top: 6px;
+}
+
+.folder-chevron-icon {
+  width: 18px;
+  height: 18px;
+  color: #9ca3af;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), color 0.2s ease;
+  flex-shrink: 0;
+}
+
+.folder-card.is-open .folder-chevron-icon {
+  transform: rotate(90deg);
+  color: #60a5fa;
 }
 
 .text-accent {
@@ -1156,3 +1226,481 @@ body {
   color: #60a5fa;
 }
 
+/* ─── 1. One-Click Strategy Presets Bar ─── */
+.presets-section {
+  margin-bottom: 20px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 14px;
+}
+
+.presets-header-title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: #60a5fa;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.presets-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.preset-card-btn {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  padding: 10px;
+  color: #d1d5db;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  font-family: var(--font-mono);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.preset-card-btn:hover {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: #60a5fa;
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+.preset-card-btn.active-preset {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: #3b82f6;
+  box-shadow: 0 0 12px rgba(59, 130, 246, 0.3);
+  color: #fff;
+}
+
+.preset-card-btn strong {
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.preset-card-btn small {
+  font-size: 10px;
+  color: #9ca3af;
+}
+
+/* ─── 2. Enhanced File Dropzone & Path Helper ─── */
+.file-dropzone-box {
+  position: relative;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px dashed rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  padding: 16px;
+  transition: all 0.25s ease;
+}
+
+.file-dropzone-box:hover, .file-dropzone-box.dragover {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.08);
+  box-shadow: 0 0 15px rgba(59, 130, 246, 0.15);
+}
+
+.file-input-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.btn-input-action {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #e5e7eb;
+  padding: 4px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btn-input-action:hover {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: #60a5fa;
+  color: #fff;
+}
+
+/* ─── 3. Visual 4-Step Pipeline Indicator ─── */
+.pipeline-steps-tracker {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin: 16px 0;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+}
+
+.step-tracker-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 4px;
+  opacity: 0.4;
+  transition: all 0.3s ease;
+}
+
+.step-tracker-item.active {
+  opacity: 1;
+}
+
+.step-tracker-item.completed {
+  opacity: 0.95;
+}
+
+.step-icon-circle {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: bold;
+  font-family: var(--font-mono);
+  color: #9ca3af;
+  transition: all 0.3s ease;
+}
+
+.step-tracker-item.active .step-icon-circle {
+  background: rgba(59, 130, 246, 0.25);
+  border-color: #3b82f6;
+  color: #60a5fa;
+  box-shadow: 0 0 10px rgba(59, 130, 246, 0.5);
+  animation: pulse-step 1.5s infinite alternate ease-in-out;
+}
+
+.step-tracker-item.completed .step-icon-circle {
+  background: rgba(34, 197, 94, 0.2);
+  border-color: #22c55e;
+  color: #4ade80;
+}
+
+@keyframes pulse-step {
+  from { transform: scale(1); }
+  to { transform: scale(1.1); }
+}
+
+.step-title {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #d1d5db;
+}
+
+.step-tracker-item.active .step-title {
+  color: #60a5fa;
+}
+
+.step-tracker-item.completed .step-title {
+  color: #4ade80;
+}
+
+/* ─── 4. Clip Search & Filter Bar ─── */
+.folder-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 20px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-wrap: wrap;
+}
+
+.clip-search-input {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #fff;
+  padding: 6px 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  border-radius: 4px;
+  width: 220px;
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+
+.clip-search-input:focus {
+  border-color: #3b82f6;
+}
+
+.filter-pills-group {
+  display: flex;
+  gap: 6px;
+}
+
+.filter-pill-btn {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #9ca3af;
+  padding: 4px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.filter-pill-btn:hover, .filter-pill-btn.active {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: #3b82f6;
+  color: #fff;
+}
+
+/* ─── 5. Interactive Lightbox Modal ─── */
+.video-modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(8px);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+.video-modal-backdrop.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.video-modal-content {
+  background: #161b26;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  box-shadow: 0 20px 50px rgba(0,0,0,0.6);
+  width: 90%;
+  max-width: 900px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: modalScaleUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes modalScaleUp {
+  from { transform: scale(0.92); }
+  to { transform: scale(1); }
+}
+
+.video-modal-header {
+  padding: 16px 24px;
+  background: rgba(0, 0, 0, 0.4);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.video-modal-title {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: bold;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.video-modal-close {
+  background: none;
+  border: none;
+  color: #9ca3af;
+  font-size: 20px;
+  cursor: pointer;
+  padding: 4px;
+  transition: color 0.2s ease;
+}
+
+.video-modal-close:hover {
+  color: #fff;
+}
+
+.video-modal-body {
+  display: grid;
+  grid-template-columns: 360px 1fr;
+  gap: 24px;
+  padding: 24px;
+  overflow-y: auto;
+}
+
+@media (max-width: 768px) {
+  .video-modal-body {
+    grid-template-columns: 1fr;
+  }
+}
+
+.modal-video-container {
+  aspect-ratio: 9/16;
+  background: #000;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+}
+
+.modal-video-element {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.modal-details-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.modal-detail-card {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 16px;
+}
+
+.modal-detail-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: #60a5fa;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.modal-detail-val {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: #e5e7eb;
+  line-height: 1.5;
+}
+
+.clip-action-bar {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.btn-modal-action {
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  color: #60a5fa;
+  padding: 8px 16px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-modal-action:hover {
+  background: #3b82f6;
+  color: #fff;
+}
+
+/* ─── Subtitle Editor Modal ─── */
+.subs-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 8px;
+  max-height: 50vh;
+  overflow-y: auto;
+  padding-right: 10px;
+}
+
+.subs-editor-grid::-webkit-scrollbar {
+  width: 6px;
+}
+
+.subs-editor-grid::-webkit-scrollbar-track {
+  background: rgba(0,0,0,0.2);
+}
+
+.subs-editor-grid::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 4px;
+}
+
+.sub-word-input {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-primary);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 8px;
+  border-radius: 4px;
+  text-align: center;
+  text-transform: uppercase;
+  transition: border-color 0.2s;
+  width: 100%;
+}
+
+.sub-word-input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.subs-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--color-border);
+}
+
+.btn-subs-save {
+  background: var(--color-accent);
+  color: #fff;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-subs-save:hover {
+  background: var(--color-accent-hover);
+  transform: translateY(-1px);
+}
