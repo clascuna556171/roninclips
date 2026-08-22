@@ -32,3 +32,9 @@ Thumbs.db
 *.mp4
 __pycache__/
 *.pyc
+processor/.venv/
+processor/__pycache__/
+database/*.sqlite*
+database/*.db*
+tests/scratch/
+

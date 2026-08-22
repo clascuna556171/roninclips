@@ -59,6 +59,16 @@ if (!fs.existsSync(path.join(rootDir, 'vendor'))) {
   } catch (e) {}
 }
 
+// Ensure SQLite database file exists if needed
+const dbDir = path.join(rootDir, 'database');
+const sqlitePath = path.join(dbDir, 'database.sqlite');
+if (!fs.existsSync(dbDir)) {
+  fs.mkdirSync(dbDir, { recursive: true });
+}
+if (!fs.existsSync(sqlitePath)) {
+  fs.writeFileSync(sqlitePath, '');
+}
+
 // Ensure database migration
 console.log('\n[3/3] Running database migrations...');
 try {

@@ -40,10 +40,16 @@ if %errorlevel% neq 0 (
     echo.
 )
 
-echo [1/4] Setting up environment configuration...
+echo [1/4] Setting up environment and database configuration...
 if not exist .env (
     copy .env.example .env
     call php artisan key:generate
+)
+
+REM Ensure SQLite database file exists for zero-config setups
+if not exist database mkdir database
+if not exist database\database.sqlite (
+    type nul > database\database.sqlite
 )
 
 echo.
@@ -51,8 +57,20 @@ echo [2/4] Installing PHP dependencies via Composer...
 call composer install --no-interaction --prefer-dist
 
 echo.
-echo [3/4] Installing Python processing dependencies...
-pip install -r processor/requirements.txt
+echo [3/4] Setting up Python virtual environment (processor/.venv)...
+if not exist processor\.venv (
+    echo   Creating isolated Python virtual environment...
+    python -m venv processor\.venv
+)
+
+if exist processor\.venv\Scripts\pip.exe (
+    echo   Installing Python dependencies into processor/.venv...
+    processor\.venv\Scripts\pip install --upgrade pip
+    processor\.venv\Scripts\pip install -r processor/requirements.txt
+) else (
+    echo   Installing Python dependencies globally...
+    pip install -r processor/requirements.txt
+)
 
 echo.
 echo [4/4] Running database migrations...

@@ -8,10 +8,50 @@ use Symfony\Component\Process\Process;
 
 class VideoController extends Controller
 {
+    private function getPythonBinary(): string
+    {
+        $venvWin = base_path('processor/.venv/Scripts/python.exe');
+        $venvUnix = base_path('processor/.venv/bin/python');
+        if (file_exists($venvWin)) {
+            return $venvWin;
+        }
+        if (file_exists($venvUnix)) {
+            return $venvUnix;
+        }
+        return 'python';
+    }
+
     public function index()
     {
         $videos = LongVideo::with('clips')->latest()->get();
-        return view('dashboard', compact('videos'));
+        $dbDriver = config('database.default', 'sqlite');
+        $groqModel = env('GROQ_MODEL', 'openai/gpt-oss-120b');
+        $activeJobsCount = $videos->whereNotIn('status', ['completed', 'failed'])->count();
+        $totalClipsCount = $videos->sum(function($v) {
+            return $v->clips->where('status', 'ready')->count();
+        });
+
+        return view('dashboard', compact(
+            'videos', 'dbDriver', 'groqModel', 'activeJobsCount', 'totalClipsCount'
+        ));
+    }
+
+    public function browseFile(Request $request)
+    {
+        if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
+            $psScript = '[System.Reflection.Assembly]::LoadWithPartialName("System.windows.forms") | Out-Null; ' .
+                        '$f = New-Object System.Windows.Forms.OpenFileDialog; ' .
+                        '$f.Filter = "MP4 Video (*.mp4)|*.mp4|All Video Files (*.mp4;*.mov;*.mkv)|*.mp4;*.mov;*.mkv|All Files (*.*)|*.*"; ' .
+                        '$f.Title = "Select Video File for RoninClips"; ' .
+                        'if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.FileName }';
+            $cmd = 'powershell.exe -NoProfile -NonInteractive -Command "' . $psScript . '"';
+            $selectedPath = trim(shell_exec($cmd) ?? '');
+            if (!empty($selectedPath) && file_exists($selectedPath)) {
+                return response()->json(['success' => true, 'file_path' => $selectedPath]);
+            }
+            return response()->json(['success' => false, 'message' => 'No file selected.']);
+        }
+        return response()->json(['success' => false, 'message' => 'Native file picker is available on Windows host. You can paste the file path directly.']);
     }
 
     public function store(Request $request)
@@ -28,8 +68,6 @@ class VideoController extends Controller
         }
 
         // Build processing settings from form toggles
-        // NOTE: HTML forms don't send unchecked checkboxes, so boolean() defaults
-        // must be false — the checkbox being present means it's checked.
         $settings = [
             'output_format' => $request->input('output_format', '9:16'),
             'caption_style' => $request->input('caption_style', 'yellow_pop'),
@@ -39,6 +77,9 @@ class VideoController extends Controller
             'transition_speed' => (float) $request->input('transition_speed', 0.25),
             'target_clip_count' => (int) $request->input('target_clip_count', 5),
             'full_video_mode' => $request->input('processing_mode') === 'full_video',
+            'whisper_model' => $request->input('whisper_model', 'small'),
+            'language_mode' => $request->input('language_mode', 'auto'),
+            'hardware_accel' => $request->input('hardware_accel', 'auto'),
             'smart_crop' => $request->boolean('smart_crop'),
             'auto_captions' => $request->boolean('auto_captions'),
             'punch_in_zoom' => $request->boolean('punch_in_zoom'),
@@ -58,13 +99,12 @@ class VideoController extends Controller
         ]);
 
         // Start the process completely detached from PHP
-        // This is crucial on Windows, otherwise the process is killed when the PHP request ends
-        $pythonPath = 'python';
+        $pythonPath = $this->getPythonBinary();
         $scriptPath = base_path('processor/engine.py');
         $logFile = storage_path('logs/engine_' . $video->id . '.log');
         
         if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
-            pclose(popen('start /B cmd /c "python "' . $scriptPath . '" ' . $video->id . ' > "' . $logFile . '" 2>&1"', 'r'));
+            pclose(popen('start /B cmd /c ""' . $pythonPath . '" "' . $scriptPath . '" ' . $video->id . ' > "' . $logFile . '" 2>&1"', 'r'));
         } else {
             $cmd = escapeshellarg($pythonPath) . ' ' . escapeshellarg($scriptPath) . ' ' . escapeshellarg($video->id);
             exec($cmd . ' > ' . escapeshellarg($logFile) . ' 2>&1 &');
@@ -199,12 +239,12 @@ class VideoController extends Controller
         $clip->save();
 
         // Run the python re-render script
-        $pythonPath = 'python';
+        $pythonPath = $this->getPythonBinary();
         $scriptPath = base_path('processor/re_render_clip.py');
         $logFile = storage_path('logs/re_render_' . $clip->id . '.log');
         
         if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
-            pclose(popen('start /B cmd /c "python "' . escapeshellarg($scriptPath) . '" ' . $clip->id . ' > "' . $logFile . '" 2>&1"', 'r'));
+            pclose(popen('start /B cmd /c ""' . $pythonPath . '" "' . $scriptPath . '" ' . $clip->id . ' > "' . $logFile . '" 2>&1"', 'r'));
         } else {
             $cmd = escapeshellarg($pythonPath) . ' ' . escapeshellarg($scriptPath) . ' ' . escapeshellarg($clip->id);
             exec($cmd . ' > ' . escapeshellarg($logFile) . ' 2>&1 &');

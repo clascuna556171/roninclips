@@ -1,7 +1,13 @@
+"""
+RoninClips — Fast In-Browser Transcript Re-renderer
+Reads updated word JSON, generates a fresh ASS subtitle script,
+and burns it directly onto the existing intermediate clip.
+Supports SQLite & MySQL via db_helper and GPU hardware encoding via hw_accel.
+"""
+
 import sys
 import os
 import subprocess
-import mysql.connector
 import json
 from dotenv import load_dotenv
 
@@ -10,18 +16,11 @@ if sys.platform == 'win32':
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
-load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
+sys.path.insert(0, os.path.dirname(__file__))
+from db_helper import get_db
+from hw_accel import detect_ffmpeg_encoder
 
-CLIP_ID = sys.argv[1]
-
-db = mysql.connector.connect(
-    host=os.environ.get("DB_HOST", "127.0.0.1"),
-    user=os.environ.get("DB_USERNAME", "root"),
-    password=os.environ.get("DB_PASSWORD", ""),
-    database=os.environ.get("DB_DATABASE", "roninclips"),
-    port=int(os.environ.get("DB_PORT", 3306))
-)
-cursor = db.cursor(dictionary=True)
+CLIP_ID = sys.argv[1] if len(sys.argv) > 1 else None
 
 def run_ffmpeg(cmd, **kwargs):
     kwargs.setdefault('shell', True)
@@ -47,6 +46,9 @@ def generate_ass_subtitles(words, output_path, output_w=1080, output_h=1920,
         'yellow_pop': { 'active_color': '\\c&H00FFFF&', 'inactive_color': '\\c&HFFFFFF&', 'outline_size': 4, 'shadow_size': 2 },
         'neon_cyan': { 'active_color': '\\c&HFFFF00&', 'inactive_color': '\\c&HEEEEEE&', 'outline_size': 4, 'shadow_size': 2 },
         'bold_white': { 'active_color': '\\c&H00FF00&', 'inactive_color': '\\c&HFFFFFF&', 'outline_size': 5, 'shadow_size': 3 },
+        'hormozi_box': { 'active_color': '\\c&H00D7FF&', 'inactive_color': '\\c&HFFFFFF&', 'outline_size': 6, 'shadow_size': 4 },
+        'karaoke_green': { 'active_color': '\\c&H00FF66&', 'inactive_color': '\\c&HFFFFFF&', 'outline_size': 5, 'shadow_size': 3 },
+        'cyber_pink': { 'active_color': '\\c&HFF00FF&', 'inactive_color': '\\c&H00FFFF&', 'outline_size': 5, 'shadow_size': 3 },
     }
     style_cfg = PALETTES.get(style_preset, PALETTES['yellow_pop'])
 
@@ -107,9 +109,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     return len(events)
 
 if __name__ == "__main__":
+    if not CLIP_ID:
+        sys.exit(0)
+
+    db = get_db()
+    cursor = db.cursor()
+    
     cursor.execute("SELECT * FROM video_clips WHERE id = %s", (CLIP_ID,))
     clip = cursor.fetchone()
     if not clip:
+        db.close()
         sys.exit(1)
         
     cursor.execute("SELECT * FROM long_videos WHERE id = %s", (clip['long_video_id'],))
@@ -117,13 +126,14 @@ if __name__ == "__main__":
     
     SETTINGS = {
         'output_format': '9:16', 'caption_style': 'yellow_pop', 'caption_font': 'Arial Black',
-        'caption_position': 'bottom', 'caption_layout': 'two_line', 'smart_crop': True
+        'caption_position': 'bottom', 'caption_layout': 'two_line', 'smart_crop': True,
+        'hardware_accel': 'auto'
     }
     if video and video.get('processing_settings'):
         try:
             db_settings = json.loads(video['processing_settings'])
             SETTINGS.update(db_settings)
-        except:
+        except Exception:
             pass
             
     temp_dir = os.path.join(os.path.dirname(__file__), '..', 'storage/app')
@@ -139,6 +149,7 @@ if __name__ == "__main__":
     except FileNotFoundError:
         cursor.execute("UPDATE video_clips SET status = 'ready' WHERE id = %s", (CLIP_ID,))
         db.commit()
+        db.close()
         sys.exit(1)
         
     render_w = 1080 if SETTINGS['output_format'] == '9:16' else 1920
@@ -153,14 +164,10 @@ if __name__ == "__main__":
     )
     
     filters = []
-    
-    # We will just do a static center crop for the re-render for simplicity 
-    # instead of re-running the face tracker.
-    # To do this correctly, we get intermediate clip dimensions
     probe = run_ffmpeg(f'ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "{intermediate_clip}"')
     try:
         w, h = map(int, probe.stdout.strip().split('x'))
-    except:
+    except Exception:
         w, h = 1920, 1080
 
     if SETTINGS['output_format'] == '9:16':
@@ -177,10 +184,13 @@ if __name__ == "__main__":
         filters.append(f"ass='{ass_ffmpeg}'")
         
     vf = ",".join(filters) if filters else "null"
+    _, encoder_flags = detect_ffmpeg_encoder(preferred_accel=SETTINGS.get('hardware_accel', 'auto'))
     
     run_ffmpeg(
-        f'ffmpeg -i "{intermediate_clip}" -vf "{vf}" -c:v libx264 -preset fast -crf 22 -c:a copy -y "{output_clip}"'
+        f'ffmpeg -i "{intermediate_clip}" -vf "{vf}" {encoder_flags} -c:a copy -y "{output_clip}"'
     )
     
     cursor.execute("UPDATE video_clips SET status = 'ready' WHERE id = %s", (CLIP_ID,))
     db.commit()
+    db.close()
+    print(f"Re-render completed for clip {CLIP_ID}")
