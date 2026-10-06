@@ -53,13 +53,15 @@ def detect_cuda():
     except Exception:
         pass
 
-    # 2. Try torch
+    # 2. Try torch dynamically if installed (avoids static linter missing-import error)
     try:
-        import torch
-        if torch.cuda.is_available():
-            _CUDA_AVAILABLE = True
-            _CUDA_DEVICE_NAME = torch.cuda.get_device_name(0)
-            return True, _CUDA_DEVICE_NAME
+        import importlib
+        if importlib.util.find_spec("torch") is not None:
+            torch_mod = importlib.import_module("torch")
+            if torch_mod.cuda.is_available():
+                _CUDA_AVAILABLE = True
+                _CUDA_DEVICE_NAME = torch_mod.cuda.get_device_name(0)
+                return True, _CUDA_DEVICE_NAME
     except Exception:
         pass
 
