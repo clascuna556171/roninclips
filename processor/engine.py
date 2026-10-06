@@ -446,18 +446,35 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
         if SETTINGS['auto_captions'] and os.path.exists(clip_audio):
             whisper_task = 'translate' if SETTINGS.get('language_mode') == 'translate_en' else 'transcribe'
             print(f"  📝 [Clip #{clip_id}] Transcribing clip with word-level timestamps (task={whisper_task})...")
-            clip_segments, _ = whisper_model.transcribe(
-                clip_audio, beam_size=5, word_timestamps=True, task=whisper_task
-            )
-
-            for seg in clip_segments:
-                if seg.words:
-                    for w in seg.words:
-                        all_words.append({
-                            'word': w.word.strip(),
-                            'start': w.start,
-                            'end': w.end,
-                        })
+            try:
+                clip_segments, _ = whisper_model.transcribe(
+                    clip_audio, beam_size=5, word_timestamps=True, task=whisper_task
+                )
+                for seg in clip_segments:
+                    if seg.words:
+                        for w in seg.words:
+                            all_words.append({
+                                'word': w.word.strip(),
+                                'start': w.start,
+                                'end': w.end,
+                            })
+            except Exception as clip_w_err:
+                print(f"  ⚠️ [Clip #{clip_id}] Whisper transcription error ({clip_w_err}), attempting CPU fallback...")
+                try:
+                    cpu_model = WhisperModel(whisper_tier, device='cpu', compute_type='int8')
+                    clip_segments, _ = cpu_model.transcribe(
+                        clip_audio, beam_size=5, word_timestamps=True, task=whisper_task
+                    )
+                    for seg in clip_segments:
+                        if seg.words:
+                            for w in seg.words:
+                                all_words.append({
+                                    'word': w.word.strip(),
+                                    'start': w.start,
+                                    'end': w.end,
+                                })
+                except Exception as cpu_err:
+                    print(f"  ⚠️ [Clip #{clip_id}] Subtitle generation skipped: {cpu_err}")
 
             print(f"  [Clip #{clip_id}] Found {len(all_words)} words for captions.")
 
@@ -465,6 +482,7 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
                 words_json_path = os.path.join(temp_dir, f"clip_{clip_id}_words.json")
                 with open(words_json_path, 'w', encoding='utf-8') as f:
                     json.dump(all_words, f, ensure_ascii=False, indent=2)
+                print(f"  💾 Saved transcript JSON for editor: {words_json_path}")
 
                 sub_w = 1080 if SETTINGS['output_format'] == '9:16' else render_w
                 sub_h = 1920 if SETTINGS['output_format'] == '9:16' else render_h
@@ -633,8 +651,7 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
             os.remove(ass_path)
         if os.path.exists(clip_audio):
             os.remove(clip_audio)
-        if os.path.exists(intermediate_clip):
-            os.remove(intermediate_clip)
+        # Preserve intermediate_clip for instant in-browser subtitle re-rendering (re_render_clip.py)
         emoji_temp = os.path.join(temp_dir, f'emoji_{clip_id}')
         if os.path.isdir(emoji_temp):
             import shutil
@@ -727,23 +744,43 @@ try:
 
     whisper_task = 'translate' if SETTINGS.get('language_mode') == 'translate_en' else 'transcribe'
     print(f"\nTranscribing audio with Faster-Whisper ({whisper_tier} model on {whisper_cfg['device_name']}, task={whisper_task})...")
-    whisper_model = WhisperModel(
-        whisper_tier,
-        device=whisper_cfg['device'],
-        compute_type=whisper_cfg['compute_type']
-    )
-    segments_iter, info = whisper_model.transcribe(audio_path, beam_size=5, task=whisper_task)
+    
+    try:
+        whisper_model = WhisperModel(
+            whisper_tier,
+            device=whisper_cfg['device'],
+            compute_type=whisper_cfg['compute_type']
+        )
+    except Exception as w_init_err:
+        print(f"  ⚠️ Whisper GPU initialization failed ({w_init_err}), falling back to CPU (int8)...")
+        whisper_model = WhisperModel(whisper_tier, device='cpu', compute_type='int8')
 
-    print(f"Detected language: {info.language} (probability: {info.language_probability:.2f})")
-
-    transcript_text = ""
-    for segment in segments_iter:
-        transcript_text += f"[{format_time(segment.start)} - {format_time(segment.end)}] {segment.text.strip()}\n"
+    try:
+        segments_iter, info = whisper_model.transcribe(audio_path, beam_size=5, task=whisper_task)
+        transcript_text = ""
+        for segment in segments_iter:
+            transcript_text += f"[{format_time(segment.start)} - {format_time(segment.end)}] {segment.text.strip()}\n"
+        print(f"Detected language: {info.language} (probability: {info.language_probability:.2f})")
+    except Exception as w_trans_err:
+        if ('cublas' in str(w_trans_err).lower() or 'cuda' in str(w_trans_err).lower()) and whisper_cfg.get('device') == 'cuda':
+            print(f"  ⚠️ Whisper CUDA execution failed ({w_trans_err}), falling back to CPU (int8)...")
+            whisper_model = WhisperModel(whisper_tier, device='cpu', compute_type='int8')
+            segments_iter, info = whisper_model.transcribe(audio_path, beam_size=5, task=whisper_task)
+            transcript_text = ""
+            for segment in segments_iter:
+                transcript_text += f"[{format_time(segment.start)} - {format_time(segment.end)}] {segment.text.strip()}\n"
+            print(f"Detected language: {info.language} (probability: {info.language_probability:.2f})")
+        else:
+            raise w_trans_err
 
     print(f"Transcription complete. Length: {len(transcript_text)} chars")
 
     if not transcript_text.strip():
-        raise Exception("Transcription produced empty result — audio may have no speech.")
+        if SETTINGS.get('full_video_mode', False):
+            transcript_text = "[No dialogue detected]"
+            print("  ℹ️ Full video mode: No speech detected in audio track, proceeding with visual render.")
+        else:
+            raise Exception("Transcription produced empty result — audio may have no speech.")
 
     cursor.execute("UPDATE long_videos SET transcript = %s WHERE id = %s", (transcript_text, VIDEO_ID))
     db.commit()
@@ -762,7 +799,7 @@ try:
         except Exception:
             raise Exception(f"Could not determine video duration via ffprobe.")
 
-        full_end = format_time(total_seconds)
+        full_end = format_seconds_ffmpeg(total_seconds)
         print(f"   Video duration: {total_seconds:.2f}s ({full_end})")
 
         full_meta = {
@@ -778,7 +815,7 @@ try:
         }
         cursor.execute(
             "INSERT INTO video_clips (long_video_id, start_time, end_time, hook_explanation) VALUES (%s, %s, %s, %s)",
-            (VIDEO_ID, '00:00:00', full_end, json.dumps(full_meta))
+            (int(VIDEO_ID), '00:00:00.000', full_end, json.dumps(full_meta, ensure_ascii=False))
         )
         db.commit()
         print(f"   Inserted 1 full-video clip entry.")

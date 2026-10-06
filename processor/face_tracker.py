@@ -86,6 +86,11 @@ def analyze_video_faces(video_path, start_time, duration, sample_every_n=5):
     width, height, fps = get_video_info(video_path)
     total_frames = int(duration * fps)
 
+    # For longer videos/clips (e.g. full-length video mode), dynamically adapt
+    # sampling to maintain snappy execution (~1-2 samples per second max)
+    if duration > 60:
+        sample_every_n = max(sample_every_n, int(fps * 1.5))
+
     print(f"  [face_tracker] Video: {width}x{height} @ {fps:.1f}fps, analyzing {total_frames} frames (sampling every {sample_every_n})")
 
     # Ensure the face detection model is available

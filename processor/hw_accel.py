@@ -24,6 +24,23 @@ def detect_cuda():
     if _CUDA_AVAILABLE is not None:
         return _CUDA_AVAILABLE, _CUDA_DEVICE_NAME
 
+    # On Windows, verify that cuBLAS runtime DLLs are actually present.
+    # Without cublas64_12.dll or cublas64_11.dll, Faster-Whisper / ctranslate2 crashes.
+    if sys.platform == 'win32':
+        import ctypes
+        has_cublas = False
+        for dll_name in ['cublas64_12.dll', 'cublas64_11.dll']:
+            try:
+                ctypes.CDLL(dll_name)
+                has_cublas = True
+                break
+            except Exception:
+                continue
+        if not has_cublas:
+            _CUDA_AVAILABLE = False
+            _CUDA_DEVICE_NAME = "CPU"
+            return False, "CPU"
+
     # 1. Try ctranslate2 (used directly by faster-whisper)
     try:
         import ctranslate2

@@ -194,6 +194,12 @@ def generate_punchin_filter(spikes, total_duration, input_w, input_h,
     if not spikes:
         return None
 
+    # For longer videos/clips, cap to the top 12 most prominent spikes
+    # to prevent FFmpeg filter expression parsing failure and stack overflow.
+    if len(spikes) > 12:
+        spikes = sorted(spikes, key=lambda s: s.get('peak', 0), reverse=True)[:12]
+        spikes = sorted(spikes, key=lambda s: s['start'])
+
     # Build a zoom expression using FFmpeg's expression syntax
     # z = 1.0 normally, z = zoom_factor during spikes, with easing
     zoom_expr_parts = []

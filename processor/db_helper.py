@@ -133,15 +133,20 @@ def get_db():
 
     # SQLite connection (default / fallback)
     db_path_env = os.environ.get('DB_DATABASE', '')
+    candidates = []
     if db_path_env and os.path.isabs(db_path_env):
-        sqlite_file = db_path_env
-    elif db_path_env and not db_path_env.endswith('.sqlite') and not db_path_env.endswith('.db'):
-        # In case DB_DATABASE was set to a MySQL database name like 'roninclips'
-        sqlite_file = os.path.join(ROOT_DIR, 'database', 'database.sqlite')
+        candidates.append(db_path_env)
     elif db_path_env:
-        sqlite_file = os.path.join(ROOT_DIR, db_path_env)
-    else:
-        sqlite_file = os.path.join(ROOT_DIR, 'database', 'database.sqlite')
+        candidates.append(os.path.join(ROOT_DIR, 'database', db_path_env))
+        candidates.append(os.path.join(ROOT_DIR, db_path_env))
+    candidates.append(os.path.join(ROOT_DIR, 'database', 'database.sqlite'))
+    candidates.append(os.path.join(ROOT_DIR, 'database', 'roninclips'))
+
+    sqlite_file = candidates[0]
+    for c_path in candidates:
+        if os.path.exists(c_path) and os.path.getsize(c_path) > 0:
+            sqlite_file = c_path
+            break
 
     os.makedirs(os.path.dirname(sqlite_file), exist_ok=True)
     

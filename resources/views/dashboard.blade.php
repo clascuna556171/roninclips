@@ -568,7 +568,7 @@
                                                     <!-- Primary Actions: Preview & Download -->
                                                     <div class="clip-action-bar-row">
                                                         @if($hasVideo)
-                                                            <button type="button" class="btn-card-action primary" onclick="openCinemaModal('{{ $webPath }}', 'Clip #{{ $cIndex + 1 }} - {{ addslashes($clip->title) }}', '{{ addslashes($clip->reason) }}', '{{ addslashes($absPath) }}', {{ json_encode($meta) }})">
+                                                            <button type="button" class="btn-card-action primary" onclick="openCinemaModal({{ json_encode($webPath) }}, {{ json_encode('Clip #' . ($cIndex + 1) . ' - ' . $clip->title) }}, {{ json_encode($clip->reason) }}, {{ json_encode($absPath) }}, {{ json_encode($meta) }})">
                                                                 <i data-lucide="eye" class="icon-sm"></i> PREVIEW
                                                             </button>
                                                             <a href="{{ $webPath }}" download="Clip_{{ $clip->id }}_{{ \Illuminate\Support\Str::slug($clip->title) }}.mp4" class="btn-card-action">

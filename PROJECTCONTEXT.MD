@@ -4,7 +4,7 @@ Architecture & Pipeline
 The Hybrid Architecture Flow
 
 Your application will operate as a coordinated local ecosystem:
-
+**IMPORTANT: Push every new codes aor feautures: https://github.com/clascuna556171/roninclips**
 * **The Frontend & Control Center (Laravel):** A local dashboard where you drop a long-form video file, view your finished clips, and manage tags.
 * **The Data Layer (MySQL):** Stores paths to your raw videos, extracted transcripts, AI-generated hook timestamps, and crop settings.
 * **The Processor (Python Engine):** A background script executed by Laravel (or running as a polling worker) that talks to the Gemini API, processes frames via MediaPipe, and calls FFmpeg.

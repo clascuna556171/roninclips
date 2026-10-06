@@ -143,6 +143,16 @@ if __name__ == "__main__":
     ass_path = os.path.join(temp_dir, f"clip_{CLIP_ID}.ass")
     output_clip = os.path.join(output_dir, f"clip_{CLIP_ID}.mp4")
 
+    # If intermediate clip does not exist, recreate it from source video
+    if not os.path.exists(intermediate_clip) and video and os.path.exists(video.get('storage_path', '')):
+        start_val = clip.get('start_time', '00:00:00')
+        end_val = clip.get('end_time', '00:00:30')
+        run_ffmpeg(
+            f'ffmpeg -i "{video["storage_path"]}" -ss {start_val} -to {end_val} '
+            f'-c:v libx264 -preset veryfast -crf 20 -c:a aac -b:a 128k '
+            f'-avoid_negative_ts make_zero "{intermediate_clip}" -y'
+        )
+
     try:
         with open(words_json_path, 'r', encoding='utf-8') as f:
             all_words = json.load(f)
