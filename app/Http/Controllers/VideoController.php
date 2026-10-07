@@ -63,8 +63,10 @@ class VideoController extends Controller
             return redirect()->back()->with('error', 'Error: File does not exist at the provided path.');
         }
 
-        if (strtolower(pathinfo($path, PATHINFO_EXTENSION)) !== 'mp4') {
-            return redirect()->back()->with('error', 'Error: Only .mp4 files are supported.');
+        $allowedExtensions = ['mp4', 'mov', 'mkv', 'webm', 'm4v', 'avi'];
+        $extension = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+        if (!in_array($extension, $allowedExtensions)) {
+            return redirect()->back()->with('error', 'Error: Unsupported format .' . $extension . '. Supported formats: ' . implode(', ', $allowedExtensions));
         }
 
         // Build processing settings from form toggles
@@ -123,39 +125,62 @@ class VideoController extends Controller
         }
         
         $currentStep = 'Initializing pipeline...';
-        if (str_contains($logContent, 'Extracting audio')) {
-            $currentStep = 'Extracting audio track';
-        }
-        if (str_contains($logContent, 'Transcribing audio')) {
-            $currentStep = 'Transcribing audio locally';
-        }
-        if (str_contains($logContent, 'Analyzing transcript')) {
-            $currentStep = 'Analyzing transcript with Groq';
-        }
-        if (str_contains($logContent, 'FULL VIDEO MODE')) {
-            $currentStep = 'Full video mode — skipping AI clipping';
-        }
-        if (str_contains($logContent, 'Found') && str_contains($logContent, 'viral hook candidates')) {
-            $currentStep = 'AI analysis complete, preparing render';
-        }
-        if (str_contains($logContent, 'Inserted 1 full-video clip entry')) {
-            $currentStep = 'Full video clip entry created, preparing render';
-        }
-        if (str_contains($logContent, 'Rendering clip')) {
-            preg_match_all('/Rendering clip (\d+)/', $logContent, $matches);
-            $clipNum = !empty($matches[1]) ? end($matches[1]) : '?';
-            $currentStep = "Rendering clip #{$clipNum} with FFmpeg";
-        }
+        $stepIndex = 0; // 0: init/pending, 1: transcribe, 2: analyze, 3: render, 4: ready
+        $progressPercent = 10;
         
-        if ($video->status === 'completed') {
-            $currentStep = 'Pipeline completed!';
-        } elseif ($video->status === 'failed') {
-            $currentStep = 'Pipeline failed. Check logs.';
+        $sLower = strtolower($video->status);
+
+        if ($sLower === 'transcribing') {
+            $stepIndex = 1;
+            $progressPercent = 25;
+            $currentStep = 'Transcribing audio locally with Faster-Whisper';
+        } elseif ($sLower === 'analyzing') {
+            $stepIndex = 2;
+            $progressPercent = 50;
+            $currentStep = 'Analyzing transcript with Groq AI for viral hooks';
+        } elseif ($sLower === 'processing') {
+            $stepIndex = 3;
+            $progressPercent = 70;
+            $currentStep = 'Rendering clips with FFmpeg';
+            if (str_contains($logContent, 'Rendering clip')) {
+                preg_match_all('/Rendering clip (\d+)/', $logContent, $matches);
+                $clipNum = !empty($matches[1]) ? end($matches[1]) : '?';
+                $currentStep = "Rendering clip #{$clipNum} with FFmpeg";
+                $progressPercent = 80;
+            }
+        } elseif ($sLower === 'completed') {
+            $stepIndex = 4;
+            $progressPercent = 100;
+            $currentStep = 'Pipeline completed! All clips ready.';
+        } elseif ($sLower === 'failed') {
+            $progressPercent = 100;
+            $currentStep = 'Pipeline failed. Check console logs.';
+        } else {
+            // Check logs if status is still pending or transitioning
+            if (str_contains($logContent, 'Extracting audio')) {
+                $stepIndex = 1;
+                $progressPercent = 15;
+                $currentStep = 'Extracting audio track';
+            } elseif (str_contains($logContent, 'Transcribing audio')) {
+                $stepIndex = 1;
+                $progressPercent = 30;
+                $currentStep = 'Transcribing audio locally';
+            } elseif (str_contains($logContent, 'Analyzing transcript')) {
+                $stepIndex = 2;
+                $progressPercent = 55;
+                $currentStep = 'Analyzing transcript with Groq AI';
+            } elseif (str_contains($logContent, 'Rendering clip')) {
+                $stepIndex = 3;
+                $progressPercent = 80;
+                $currentStep = 'Rendering clips with FFmpeg';
+            }
         }
 
         return response()->json([
             'status' => $video->status,
             'current_step' => $currentStep,
+            'step_index' => $stepIndex,
+            'progress_percent' => $progressPercent,
             'logs' => $logContent ?: 'No log records yet.'
         ]);
     }
@@ -227,7 +252,9 @@ class VideoController extends Controller
         $clip = \App\Models\VideoClip::findOrFail($id);
         
         $request->validate([
-            'words' => 'required|array'
+            'words' => 'required|array',
+            'caption_style' => 'nullable|string',
+            'caption_position' => 'nullable|string'
         ]);
 
         // Save updated words
@@ -238,15 +265,28 @@ class VideoController extends Controller
         $clip->status = 'rendering';
         $clip->save();
 
+        // Optional style & position overrides
+        $captionStyle = $request->input('caption_style', '');
+        $captionPos = $request->input('caption_position', '');
+
         // Run the python re-render script
         $pythonPath = $this->getPythonBinary();
         $scriptPath = base_path('processor/re_render_clip.py');
         $logFile = storage_path('logs/re_render_' . $clip->id . '.log');
         
+        $extraArgs = '';
+        if (!empty($captionStyle)) {
+            $extraArgs .= ' ' . escapeshellarg($captionStyle);
+            if (!empty($captionPos)) {
+                $extraArgs .= ' ' . escapeshellarg($captionPos);
+            }
+        }
+        
         if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
-            pclose(popen('start /B cmd /c ""' . $pythonPath . '" "' . $scriptPath . '" ' . $clip->id . ' > "' . $logFile . '" 2>&1"', 'r'));
+            $cmd = 'start /B cmd /c ""' . $pythonPath . '" "' . $scriptPath . '" ' . $clip->id . $extraArgs . ' > "' . $logFile . '" 2>&1"';
+            pclose(popen($cmd, 'r'));
         } else {
-            $cmd = escapeshellarg($pythonPath) . ' ' . escapeshellarg($scriptPath) . ' ' . escapeshellarg($clip->id);
+            $cmd = escapeshellarg($pythonPath) . ' ' . escapeshellarg($scriptPath) . ' ' . escapeshellarg($clip->id) . $extraArgs;
             exec($cmd . ' > ' . escapeshellarg($logFile) . ' 2>&1 &');
         }
 

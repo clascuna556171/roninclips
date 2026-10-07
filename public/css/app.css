@@ -1348,20 +1348,96 @@ button, input, select, textarea, pre, code {
   border-radius: var(--radius-xs);
 }
 
+.sub-editor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  background: #110f0f;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xs);
+  margin-bottom: 8px;
+}
+
+.sub-editor-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sub-editor-select {
+  background: #000;
+  border: 1px solid var(--color-border);
+  color: #fff;
+  font-family: inherit;
+  font-size: 10px;
+  padding: 3px 6px;
+  border-radius: 2px;
+}
+
 .sub-word-card {
   background: var(--color-card);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-xs);
-  padding: 4px;
+  padding: 6px;
   display: flex;
   flex-direction: column;
+  gap: 4px;
+  position: relative;
+  transition: border-color 0.15s, transform 0.15s;
+}
+
+.sub-word-card:hover {
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
+.sub-word-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sub-time-inputs {
+  display: flex;
+  align-items: center;
   gap: 2px;
 }
 
-.sub-time-label {
+.sub-time-input {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--color-text-secondary);
+  font-family: inherit;
   font-size: 8px;
-  color: var(--color-text-muted);
+  width: 42px;
   text-align: center;
+  padding: 1px 2px;
+  border-radius: 2px;
+}
+
+.sub-time-input:focus {
+  outline: none;
+  border-color: #38bdf8;
+  color: #fff;
+}
+
+.btn-word-delete {
+  background: transparent;
+  border: none;
+  color: var(--color-text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 2px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.btn-word-delete:hover {
+  color: #ff453a;
+  background: rgba(255, 69, 58, 0.15);
 }
 
 .sub-word-input {
@@ -1369,7 +1445,7 @@ button, input, select, textarea, pre, code {
   border: 1px solid var(--color-border);
   color: #fff;
   font-size: 10px;
-  padding: 3px 4px;
+  padding: 4px 6px;
   border-radius: 2px;
   text-align: center;
   text-transform: uppercase;
@@ -1396,6 +1472,11 @@ button, input, select, textarea, pre, code {
   padding: 6px 12px;
   border-radius: var(--radius-xs);
   cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.btn-subs-save:hover {
+  opacity: 0.9;
 }
 
 /* Toast */

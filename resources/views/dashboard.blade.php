@@ -190,6 +190,8 @@
                                     <option value="hormozi_box">🔴 Hormozi Style (High-Contrast Red / Warm Gold)</option>
                                     <option value="karaoke_green">⚡ Karaoke Lime (MrBeast Vibrant Lime Pop)</option>
                                     <option value="cyber_pink">🟣 Cyber Pink (Electric Magenta & Neon Yellow)</option>
+                                    <option value="fire_gold">🔥 Fire Gold (Red-Orange Pop with Gold)</option>
+                                    <option value="electric_violet">⚡ Electric Violet (Neon Purple & Crisp White)</option>
                                 </select>
                             </div>
                             <div class="form-group">
@@ -384,6 +386,14 @@
                                         $steps = ['transcribing', 'analyzing', 'processing', 'completed'];
                                         $activeIdx = array_search($sLower, $steps);
                                         if ($activeIdx === false) $activeIdx = ($sLower === 'pending' ? -1 : 0);
+                                        $initialPercent = match($sLower) {
+                                            'pending' => 10,
+                                            'transcribing' => 25,
+                                            'analyzing' => 50,
+                                            'processing' => 75,
+                                            'completed' => 100,
+                                            default => 15
+                                        };
                                     @endphp
                                     <div class="step-tracker-item {{ $activeIdx > 0 ? 'completed' : ($activeIdx === 0 ? 'active' : '') }}">
                                         <span>[1] Transcribe</span>
@@ -401,15 +411,20 @@
 
                                 <!-- Progress Bar -->
                                 <div class="progress-track">
-                                    <div class="progress-bar progress-active" style="width: 45%;"></div>
+                                    <div class="progress-bar progress-active" id="progress-bar-{{ $video->id }}" style="width: {{ $initialPercent }}%;"></div>
+                                </div>
+
+                                <!-- Dynamic Live Step & Progress Label -->
+                                <div class="current-step-label" id="current-step-label-{{ $video->id }}" style="font-size: 11px; color: #38bdf8; font-weight: 700; margin-top: 6px; letter-spacing: 0.3px;">
+                                    ▶ Processing: {{ ucfirst($video->status) }} ({{ $initialPercent }}%)
                                 </div>
 
                                 <!-- Collapsible Terminal Logs -->
-                                <details style="background: #110f0f; border: 1px solid var(--color-border); border-radius: 4px; padding: 6px 10px;">
+                                <details style="background: #110f0f; border: 1px solid var(--color-border); border-radius: 4px; padding: 6px 10px; margin-top: 8px;" open>
                                     <summary style="font-size: 10px; font-weight: 700; color: var(--color-text-secondary); cursor: pointer;">
                                         [ CONSOLE OUTPUT STREAM ]
                                     </summary>
-                                    <pre class="console-log" style="margin-top: 6px;">Waiting for pipeline output...</pre>
+                                    <pre class="console-log" id="console-log-{{ $video->id }}" style="margin-top: 6px; max-height: 200px; overflow-y: auto;">Waiting for pipeline output...</pre>
                                 </details>
                             </div>
                         </div>
@@ -682,18 +697,52 @@
 
     <!-- ─── Interactive Subtitle Editor Modal ─── -->
     <div class="video-modal-backdrop" id="subs-modal" onclick="if(event.target===this) closeSubsEditor()">
-        <div class="video-modal-content" style="max-width: 720px;">
+        <div class="video-modal-content" style="max-width: 820px;">
             <div class="video-modal-header">
                 <div class="video-modal-title">
                     <i data-lucide="file-edit" class="icon-md" style="color: #bf5af2;"></i>
-                    <span>[ EDIT SUBTITLE TRANSCRIPTS ]</span>
+                    <span>[ WORD-LEVEL TRANSCRIPT & SUBTITLE EDITOR ]</span>
                 </div>
                 <button type="button" class="video-modal-close" onclick="closeSubsEditor()"><i data-lucide="x" class="icon-md"></i></button>
             </div>
             <div class="video-modal-body" style="flex-direction: column; padding: 14px;">
-                <p style="color: var(--color-text-secondary); font-size: 11px; margin-bottom: 10px;">
-                    Edit the AI-generated words below. Subtitle ASS scripts will automatically re-generate and re-render the clip.
+                <p style="color: var(--color-text-secondary); font-size: 11px; margin-bottom: 8px;">
+                    Edit words, adjust exact timestamps, delete filler words, or switch subtitle presets. ASS subtitle scripts and face tracking will re-generate seamlessly.
                 </p>
+
+                <!-- Subtitle Editor Toolbar: Style Presets, Position, Add Word -->
+                <div class="sub-editor-toolbar" id="subs-editor-toolbar" style="display: none;">
+                    <div class="sub-editor-toolbar-group">
+                        <label style="font-size: 10px; color: var(--color-text-muted); font-weight: 700;">STYLE:</label>
+                        <select id="modal-subs-style" class="sub-editor-select">
+                            <option value="yellow_pop">🟡 Yellow Pop</option>
+                            <option value="neon_cyan">🔵 Neon Cyan</option>
+                            <option value="bold_white">🟢 Bold White</option>
+                            <option value="hormozi_box">🔴 Hormozi Style</option>
+                            <option value="karaoke_green">⚡ Karaoke Lime</option>
+                            <option value="cyber_pink">🟣 Cyber Pink</option>
+                            <option value="fire_gold">🔥 Fire Gold</option>
+                            <option value="electric_violet">⚡ Electric Violet</option>
+                        </select>
+                    </div>
+
+                    <div class="sub-editor-toolbar-group">
+                        <label style="font-size: 10px; color: var(--color-text-muted); font-weight: 700;">POSITION:</label>
+                        <select id="modal-subs-pos" class="sub-editor-select">
+                            <option value="bottom">Bottom (Safe Zone)</option>
+                            <option value="center">Center (Eye-Level)</option>
+                            <option value="top">Top (Banner)</option>
+                        </select>
+                    </div>
+
+                    <div class="sub-editor-toolbar-group">
+                        <span id="subs-word-count-badge" style="font-size: 10px; color: #38bdf8; font-weight: 700; margin-right: 6px;">0 words</span>
+                        <button type="button" class="btn-input-action" onclick="addWordToTranscript()" style="background: rgba(56, 189, 248, 0.15); border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; display: inline-flex; align-items: center; gap: 4px;">
+                            <i data-lucide="plus" class="icon-sm"></i> ADD WORD
+                        </button>
+                    </div>
+                </div>
+
                 <div id="subs-editor-loading" style="display: none; padding: 24px; text-align: center; color: var(--color-text-secondary);">
                     <span class="spinner" style="width: 18px; height: 18px; margin-bottom: 6px; display: inline-block;"></span>
                     <div>Loading transcript words...</div>
@@ -1102,7 +1151,9 @@
             'bold_white': { active: '#00ff00', inactive: '#ffffff', stroke: '#000000' },
             'hormozi_box': { active: '#ffd700', inactive: '#ffffff', stroke: '#ff0000' },
             'karaoke_green': { active: '#66ff00', inactive: '#ffffff', stroke: '#003300' },
-            'cyber_pink': { active: '#ff00ff', inactive: '#ffff00', stroke: '#330033' }
+            'cyber_pink': { active: '#ff00ff', inactive: '#ffff00', stroke: '#330033' },
+            'fire_gold': { active: '#ff4500', inactive: '#ffd700', stroke: '#000000' },
+            'electric_violet': { active: '#a855f7', inactive: '#ffffff', stroke: '#2e0854' }
         };
 
         function updateSubtitleSimulator() {
@@ -1169,12 +1220,14 @@
             const loading = document.getElementById('subs-editor-loading');
             const error = document.getElementById('subs-editor-error');
             const grid = document.getElementById('subs-editor-grid');
+            const toolbar = document.getElementById('subs-editor-toolbar');
             const actions = document.getElementById('subs-editor-actions');
 
             modal.classList.add('is-visible');
             loading.style.display = 'block';
             error.style.display = 'none';
             grid.style.display = 'none';
+            if (toolbar) toolbar.style.display = 'none';
             actions.style.display = 'none';
             grid.innerHTML = '';
 
@@ -1188,19 +1241,13 @@
                     throw new Error('No words found in transcript for this clip.');
                 }
 
-                currentSubsData.forEach((w, idx) => {
-                    const card = document.createElement('div');
-                    card.className = 'sub-word-card';
-                    card.innerHTML = `
-                        <div class="sub-time-label">${w.start.toFixed(2)}s - ${w.end.toFixed(2)}s</div>
-                        <input type="text" class="sub-word-input" value="${w.word.replace(/"/g, '&quot;')}" oninput="updateWordData(${idx}, this.value)">
-                    `;
-                    grid.appendChild(card);
-                });
+                renderSubsEditorGrid();
 
                 loading.style.display = 'none';
+                if (toolbar) toolbar.style.display = 'flex';
                 grid.style.display = 'grid';
                 actions.style.display = 'flex';
+                if (window.lucide) lucide.createIcons();
             } catch (err) {
                 loading.style.display = 'none';
                 error.textContent = err.message;
@@ -1208,10 +1255,69 @@
             }
         }
 
+        function renderSubsEditorGrid() {
+            const grid = document.getElementById('subs-editor-grid');
+            const countBadge = document.getElementById('subs-word-count-badge');
+            if (!grid) return;
+
+            grid.innerHTML = '';
+            if (countBadge) countBadge.textContent = `${currentSubsData.length} words`;
+
+            currentSubsData.forEach((w, idx) => {
+                const card = document.createElement('div');
+                card.className = 'sub-word-card';
+                card.innerHTML = `
+                    <div class="sub-word-card-header">
+                        <div class="sub-time-inputs" title="Adjust start & end timings">
+                            <input type="number" step="0.05" min="0" class="sub-time-input" value="${Number(w.start).toFixed(2)}" onchange="updateWordStart(${idx}, this.value)">
+                            <span style="font-size: 8px; color: var(--color-text-muted);">➔</span>
+                            <input type="number" step="0.05" min="0" class="sub-time-input" value="${Number(w.end).toFixed(2)}" onchange="updateWordEnd(${idx}, this.value)">
+                        </div>
+                        <button type="button" class="btn-word-delete" onclick="deleteWord(${idx})" title="Delete this word">&times;</button>
+                    </div>
+                    <input type="text" class="sub-word-input" value="${(w.word || '').replace(/"/g, '&quot;')}" oninput="updateWordData(${idx}, this.value)">
+                `;
+                grid.appendChild(card);
+            });
+        }
+
         function updateWordData(index, newWord) {
             if (currentSubsData[index]) {
                 currentSubsData[index].word = newWord;
             }
+        }
+
+        function updateWordStart(index, newStart) {
+            if (currentSubsData[index]) {
+                currentSubsData[index].start = parseFloat(newStart) || 0;
+            }
+        }
+
+        function updateWordEnd(index, newEnd) {
+            if (currentSubsData[index]) {
+                currentSubsData[index].end = parseFloat(newEnd) || 0;
+            }
+        }
+
+        function deleteWord(index) {
+            if (currentSubsData[index]) {
+                currentSubsData.splice(index, 1);
+                renderSubsEditorGrid();
+            }
+        }
+
+        function addWordToTranscript() {
+            const lastWord = currentSubsData.length > 0 ? currentSubsData[currentSubsData.length - 1] : null;
+            const newStart = lastWord ? (Number(lastWord.end) + 0.05) : 0.0;
+            const newEnd = Number((newStart + 0.45).toFixed(2));
+            currentSubsData.push({
+                word: 'NEW',
+                start: Number(newStart.toFixed(2)),
+                end: newEnd
+            });
+            renderSubsEditorGrid();
+            const grid = document.getElementById('subs-editor-grid');
+            if (grid) grid.scrollTop = grid.scrollHeight;
         }
 
         function closeSubsEditor() {
@@ -1226,6 +1332,9 @@
             btn.innerHTML = '<i data-lucide="loader" class="icon-sm" style="animation: spin 1s linear infinite;"></i> SAVING...';
             btn.disabled = true;
 
+            const styleVal = document.getElementById('modal-subs-style') ? document.getElementById('modal-subs-style').value : '';
+            const posVal = document.getElementById('modal-subs-pos') ? document.getElementById('modal-subs-pos').value : '';
+
             try {
                 const res = await fetch(`/clips/${currentClipId}/re-render`, {
                     method: 'POST',
@@ -1233,7 +1342,11 @@
                         'X-CSRF-TOKEN': '{{ csrf_token() }}',
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ words: currentSubsData })
+                    body: JSON.stringify({
+                        words: currentSubsData,
+                        caption_style: styleVal,
+                        caption_position: posVal
+                    })
                 });
                 const data = await res.json();
                 if (res.ok && data.success) {
@@ -1269,14 +1382,51 @@
                     const card = document.querySelector(`.video-card[data-video-id="${videoId}"]`);
                     if (!card) return;
 
+                    // 1. Update status badge & text
                     const statusBadge = card.querySelector('.status-badge');
                     const statusText = card.querySelector('.status-text');
                     if (statusText) statusText.textContent = data.status;
                     if (statusBadge) statusBadge.className = 'status-badge status-' + data.status.toLowerCase();
 
-                    const pre = card.querySelector('.console-log');
-                    if (pre) pre.textContent = data.logs;
+                    // 2. Update step tracker items dynamically
+                    const tracker = card.querySelector('.step-tracker-container');
+                    if (tracker) {
+                        const stepItems = tracker.querySelectorAll('.step-tracker-item');
+                        const sIdx = (data.step_index !== undefined) ? data.step_index : 0;
+                        stepItems.forEach((item, idx) => {
+                            item.classList.remove('active', 'completed');
+                            const stepNum = idx + 1;
+                            if (sIdx > stepNum) {
+                                item.classList.add('completed');
+                            } else if (sIdx === stepNum) {
+                                item.classList.add('active');
+                            }
+                        });
+                    }
 
+                    // 3. Update Progress Bar width
+                    const pBar = card.querySelector('.progress-bar');
+                    if (pBar && data.progress_percent !== undefined) {
+                        pBar.style.width = data.progress_percent + '%';
+                    }
+
+                    // 4. Update Current Step label
+                    const stepLabel = card.querySelector('.current-step-label');
+                    if (stepLabel && data.current_step) {
+                        stepLabel.textContent = `▶ ${data.current_step} (${data.progress_percent || 0}%)`;
+                    }
+
+                    // 5. Update and auto-scroll console logs
+                    const pre = card.querySelector('.console-log');
+                    if (pre) {
+                        const wasNearBottom = (pre.scrollHeight - pre.scrollTop - pre.clientHeight) < 80;
+                        pre.textContent = data.logs;
+                        if (wasNearBottom) {
+                            pre.scrollTop = pre.scrollHeight;
+                        }
+                    }
+
+                    // 6. Reload on complete or failure
                     if (['completed', 'failed'].includes(data.status.toLowerCase())) {
                         clearInterval(interval);
                         setTimeout(() => window.location.reload(), 1500);

@@ -2,6 +2,7 @@ import sys
 import os
 import subprocess
 import json
+import re
 import concurrent.futures
 from dotenv import load_dotenv
 from faster_whisper import WhisperModel
@@ -55,7 +56,8 @@ if len(sys.argv) > 2 and sys.argv[2] != '--b64':
 else:
     SETTINGS = DEFAULT_SETTINGS.copy()
 
-print(f"Initial settings: {json.dumps(SETTINGS, indent=2)}")
+if __name__ == "__main__":
+    print(f"Initial settings: {json.dumps(SETTINGS, indent=2)}")
 
 client = Groq(api_key=os.environ.get("GROQ_API_KEY", ""))
 
@@ -136,6 +138,48 @@ def ffmpeg_escape_path(path):
     return p
 
 
+def parse_groq_json_response(raw_text):
+    """
+    Robustly extracts and parses JSON array from LLM response text,
+    handling markdown wrappers, conversational preambles, and postscripts.
+    """
+    if not raw_text:
+        raise ValueError("Empty response received from LLM.")
+
+    # 1. Direct stripped attempt
+    clean = raw_text.replace("```json", "").replace("```", "").strip()
+    try:
+        data = json.loads(clean)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+
+    # 2. Regex search for array of objects [ { ... } ]
+    match = re.search(r'\[\s*\{.*\}\s*\]', raw_text, re.DOTALL)
+    if match:
+        try:
+            data = json.loads(match.group(0))
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+
+    # 3. Bracket boundary slice [ ... ]
+    start_idx = raw_text.find('[')
+    end_idx = raw_text.rfind(']')
+    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+        slice_text = raw_text[start_idx:end_idx + 1]
+        try:
+            data = json.loads(slice_text)
+            if isinstance(data, list):
+                return data
+        except Exception as e:
+            raise ValueError(f"Found JSON array brackets but parsing failed: {e}. Output snippet: {slice_text[:250]}...")
+
+    raise ValueError(f"Could not locate a valid JSON array in model output. Response preview: {raw_text[:300]}...")
+
+
 def generate_ass_subtitles(words, output_path, output_w=1080, output_h=1920,
                             style_preset='yellow_pop', font_family='Arial Black',
                             position='bottom', layout_mode='two_line'):
@@ -176,6 +220,18 @@ def generate_ass_subtitles(words, output_path, output_w=1080, output_h=1920,
         'cyber_pink': {
             'active_color': '\\c&HFF00FF&',      # Neon Magenta / Pink (#FF00FF -> BGR FF00FF)
             'inactive_color': '\\c&H00FFFF&',    # Electric Yellow (#FFFF00 -> BGR 00FFFF)
+            'outline_size': 5,
+            'shadow_size': 3,
+        },
+        'fire_gold': {
+            'active_color': '\\c&H0045FF&',      # Fire Red-Orange (#FF4500 -> BGR 0045FF)
+            'inactive_color': '\\c&H00D7FF&',    # Warm Gold (#FFD700 -> BGR 00D7FF)
+            'outline_size': 6,
+            'shadow_size': 3,
+        },
+        'electric_violet': {
+            'active_color': '\\c&HF755A8&',      # Electric Violet (#A855F7 -> BGR F755A8)
+            'inactive_color': '\\c&HFFFFFF&',    # Crisp White
             'outline_size': 5,
             'shadow_size': 3,
         },
@@ -657,7 +713,17 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
             import shutil
             shutil.rmtree(emoji_temp, ignore_errors=True)
 
-        thread_cursor.execute("UPDATE video_clips SET output_path = %s, status = 'ready' WHERE id = %s", (relative_output, clip_id))
+        crop_data = {
+            'crop_filter': crop_filter,
+            'use_split_screen': use_split_screen,
+            'split_filter_complex': split_filter_complex if use_split_screen else None,
+            'render_w': render_w,
+            'render_h': render_h,
+        }
+        thread_cursor.execute(
+            "UPDATE video_clips SET output_path = %s, crop_coordinates_json = %s, status = 'ready' WHERE id = %s",
+            (relative_output, json.dumps(crop_data), clip_id)
+        )
         thread_db.commit()
         print(f"  ✅ [Clip #{clip_id}] Ready!")
         return True
@@ -678,151 +744,152 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
 # Main Pipeline Execution
 # ──────────────────────────────────────────────
 
-if VIDEO_ID is None:
-    # Loaded as module or test
-    sys.exit(0)
+def run_pipeline():
+    if VIDEO_ID is None:
+        # Loaded directly without arguments
+        sys.exit(0)
 
-db = get_db()
-cursor = db.cursor()
+    db = get_db()
+    cursor = db.cursor()
 
-try:
-    # 1. Fetch video metadata
-    cursor.execute("SELECT * FROM long_videos WHERE id = %s", (VIDEO_ID,))
-    video = cursor.fetchone()
-
-    if not video:
-        raise Exception(f"Video with id {VIDEO_ID} not found in database.")
-
-    # Override settings from DB if available
-    if video.get('processing_settings'):
-        try:
-            db_settings = json.loads(video['processing_settings'])
-            SETTINGS.update(db_settings)
-            
-            for key in ['full_video_mode', 'smart_crop', 'auto_captions', 'punch_in_zoom', 'ken_burns',
-                        'emoji_overlays', 'whip_pan_transitions', 'background_music', 'split_screen']:
-                val = SETTINGS.get(key)
-                if isinstance(val, str):
-                    SETTINGS[key] = val.lower() in ('true', '1', 'yes')
-                elif isinstance(val, (int, float)):
-                    SETTINGS[key] = bool(val)
-                    
-            print(f"Loaded DB processing settings: {json.dumps(SETTINGS, indent=2)}")
-        except Exception as e:
-            print(f"Warning: Could not parse DB settings: {e}")
-
-    # Detect hardware configuration
-    hw_pref = SETTINGS.get('hardware_accel', 'auto')
-    whisper_cfg = get_whisper_config(preferred_accel=hw_pref)
-    encoder_name, encoder_flags = detect_ffmpeg_encoder(preferred_accel=hw_pref)
-    
-    print(f"\n🚀 Hardware Acceleration Status:")
-    print(f"   Whisper Device:    {whisper_cfg['device_name']}")
-    print(f"   FFmpeg Video Enc:  {encoder_name} ({'Hardware Accelerated' if encoder_name != 'libx264' else 'CPU'})")
-
-    cursor.execute("UPDATE long_videos SET status = 'transcribing' WHERE id = %s", (VIDEO_ID,))
-    db.commit()
-
-    # 2. Extract Audio
-    audio_path = os.path.join(os.path.dirname(__file__), '..', f'storage/app/temp_{VIDEO_ID}.mp3')
-    audio_path = os.path.abspath(audio_path)
-    os.makedirs(os.path.dirname(audio_path), exist_ok=True)
-
-    print(f"\nExtracting audio from: {video['storage_path']}")
-    result = run_ffmpeg(
-        f'ffmpeg -i "{video["storage_path"]}" -b:a 64k -ac 1 -ar 16000 -map a "{audio_path}" -y'
-    )
-    if not os.path.exists(audio_path):
-        raise Exception(f"FFmpeg failed to extract audio. stderr: {result.stderr[-500:]}")
-
-    print(f"Audio extracted: {os.path.getsize(audio_path) / 1024:.0f} KB")
-
-    # 3. Transcribe Locally with Faster-Whisper
-    whisper_tier = SETTINGS.get('whisper_model', 'small').lower().strip()
-    if whisper_tier not in ('tiny', 'base', 'small', 'medium', 'large-v3'):
-        whisper_tier = 'small'
-
-    whisper_task = 'translate' if SETTINGS.get('language_mode') == 'translate_en' else 'transcribe'
-    print(f"\nTranscribing audio with Faster-Whisper ({whisper_tier} model on {whisper_cfg['device_name']}, task={whisper_task})...")
-    
     try:
-        whisper_model = WhisperModel(
-            whisper_tier,
-            device=whisper_cfg['device'],
-            compute_type=whisper_cfg['compute_type']
+        # 1. Fetch video metadata
+        cursor.execute("SELECT * FROM long_videos WHERE id = %s", (VIDEO_ID,))
+        video = cursor.fetchone()
+
+        if not video:
+            raise Exception(f"Video with id {VIDEO_ID} not found in database.")
+
+        # Override settings from DB if available
+        if video.get('processing_settings'):
+            try:
+                db_settings = json.loads(video['processing_settings'])
+                SETTINGS.update(db_settings)
+                
+                for key in ['full_video_mode', 'smart_crop', 'auto_captions', 'punch_in_zoom', 'ken_burns',
+                            'emoji_overlays', 'whip_pan_transitions', 'background_music', 'split_screen']:
+                    val = SETTINGS.get(key)
+                    if isinstance(val, str):
+                        SETTINGS[key] = val.lower() in ('true', '1', 'yes')
+                    elif isinstance(val, (int, float)):
+                        SETTINGS[key] = bool(val)
+                        
+                print(f"Loaded DB processing settings: {json.dumps(SETTINGS, indent=2)}")
+            except Exception as e:
+                print(f"Warning: Could not parse DB settings: {e}")
+
+        # Detect hardware configuration
+        hw_pref = SETTINGS.get('hardware_accel', 'auto')
+        whisper_cfg = get_whisper_config(preferred_accel=hw_pref)
+        encoder_name, encoder_flags = detect_ffmpeg_encoder(preferred_accel=hw_pref)
+        
+        print(f"\n🚀 Hardware Acceleration Status:")
+        print(f"   Whisper Device:    {whisper_cfg['device_name']}")
+        print(f"   FFmpeg Video Enc:  {encoder_name} ({'Hardware Accelerated' if encoder_name != 'libx264' else 'CPU'})")
+
+        cursor.execute("UPDATE long_videos SET status = 'transcribing' WHERE id = %s", (VIDEO_ID,))
+        db.commit()
+
+        # 2. Extract Audio
+        audio_path = os.path.join(os.path.dirname(__file__), '..', f'storage/app/temp_{VIDEO_ID}.mp3')
+        audio_path = os.path.abspath(audio_path)
+        os.makedirs(os.path.dirname(audio_path), exist_ok=True)
+
+        print(f"\nExtracting audio from: {video['storage_path']}")
+        result = run_ffmpeg(
+            f'ffmpeg -i "{video["storage_path"]}" -b:a 64k -ac 1 -ar 16000 -map a "{audio_path}" -y'
         )
-    except Exception as w_init_err:
-        print(f"  ⚠️ Whisper GPU initialization failed ({w_init_err}), falling back to CPU (int8)...")
-        whisper_model = WhisperModel(whisper_tier, device='cpu', compute_type='int8')
+        if not os.path.exists(audio_path):
+            raise Exception(f"FFmpeg failed to extract audio. stderr: {result.stderr[-500:]}")
 
-    try:
-        segments_iter, info = whisper_model.transcribe(audio_path, beam_size=5, task=whisper_task)
-        transcript_text = ""
-        for segment in segments_iter:
-            transcript_text += f"[{format_time(segment.start)} - {format_time(segment.end)}] {segment.text.strip()}\n"
-        print(f"Detected language: {info.language} (probability: {info.language_probability:.2f})")
-    except Exception as w_trans_err:
-        if ('cublas' in str(w_trans_err).lower() or 'cuda' in str(w_trans_err).lower()) and whisper_cfg.get('device') == 'cuda':
-            print(f"  ⚠️ Whisper CUDA execution failed ({w_trans_err}), falling back to CPU (int8)...")
+        print(f"Audio extracted: {os.path.getsize(audio_path) / 1024:.0f} KB")
+
+        # 3. Transcribe Locally with Faster-Whisper
+        whisper_tier = SETTINGS.get('whisper_model', 'small').lower().strip()
+        if whisper_tier not in ('tiny', 'base', 'small', 'medium', 'large-v3'):
+            whisper_tier = 'small'
+
+        whisper_task = 'translate' if SETTINGS.get('language_mode') == 'translate_en' else 'transcribe'
+        print(f"\nTranscribing audio with Faster-Whisper ({whisper_tier} model on {whisper_cfg['device_name']}, task={whisper_task})...")
+        
+        try:
+            whisper_model = WhisperModel(
+                whisper_tier,
+                device=whisper_cfg['device'],
+                compute_type=whisper_cfg['compute_type']
+            )
+        except Exception as w_init_err:
+            print(f"  ⚠️ Whisper GPU initialization failed ({w_init_err}), falling back to CPU (int8)...")
             whisper_model = WhisperModel(whisper_tier, device='cpu', compute_type='int8')
+
+        try:
             segments_iter, info = whisper_model.transcribe(audio_path, beam_size=5, task=whisper_task)
             transcript_text = ""
             for segment in segments_iter:
                 transcript_text += f"[{format_time(segment.start)} - {format_time(segment.end)}] {segment.text.strip()}\n"
             print(f"Detected language: {info.language} (probability: {info.language_probability:.2f})")
-        else:
-            raise w_trans_err
+        except Exception as w_trans_err:
+            if ('cublas' in str(w_trans_err).lower() or 'cuda' in str(w_trans_err).lower()) and whisper_cfg.get('device') == 'cuda':
+                print(f"  ⚠️ Whisper CUDA execution failed ({w_trans_err}), falling back to CPU (int8)...")
+                whisper_model = WhisperModel(whisper_tier, device='cpu', compute_type='int8')
+                segments_iter, info = whisper_model.transcribe(audio_path, beam_size=5, task=whisper_task)
+                transcript_text = ""
+                for segment in segments_iter:
+                    transcript_text += f"[{format_time(segment.start)} - {format_time(segment.end)}] {segment.text.strip()}\n"
+                print(f"Detected language: {info.language} (probability: {info.language_probability:.2f})")
+            else:
+                raise w_trans_err
 
-    print(f"Transcription complete. Length: {len(transcript_text)} chars")
+        print(f"Transcription complete. Length: {len(transcript_text)} chars")
 
-    if not transcript_text.strip():
-        if SETTINGS.get('full_video_mode', False):
-            transcript_text = "[No dialogue detected]"
-            print("  ℹ️ Full video mode: No speech detected in audio track, proceeding with visual render.")
-        else:
-            raise Exception("Transcription produced empty result — audio may have no speech.")
+        if not transcript_text.strip():
+            if SETTINGS.get('full_video_mode', False):
+                transcript_text = "[No dialogue detected]"
+                print("  ℹ️ Full video mode: No speech detected in audio track, proceeding with visual render.")
+            else:
+                raise Exception("Transcription produced empty result — audio may have no speech.")
 
-    cursor.execute("UPDATE long_videos SET transcript = %s WHERE id = %s", (transcript_text, VIDEO_ID))
-    db.commit()
-
-    # 4. Analyze — AI Clip Extraction OR Full Video Mode
-    cursor.execute("UPDATE long_videos SET status = 'analyzing' WHERE id = %s", (VIDEO_ID,))
-    db.commit()
-
-    if SETTINGS.get('full_video_mode', False):
-        print("\n🎬 FULL VIDEO MODE — Skipping AI clip extraction.")
-        duration_result = run_ffmpeg(
-            f'ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "{video["storage_path"]}"'
-        )
-        try:
-            total_seconds = float(duration_result.stdout.strip())
-        except Exception:
-            raise Exception(f"Could not determine video duration via ffprobe.")
-
-        full_end = format_seconds_ffmpeg(total_seconds)
-        print(f"   Video duration: {total_seconds:.2f}s ({full_end})")
-
-        full_meta = {
-            'title': 'Full Video Render',
-            'virality_score': 90,
-            'hook_strength': 90,
-            'pacing_energy': 90,
-            'shareability': 90,
-            'reason': 'Full Video — Subtitles & Rendered Effects',
-            'social_caption': 'Full length video with animated dynamic subtitles. 🔥 Watch now!',
-            'hashtags': '#fullvideo #content #roninclips #videoediting',
-            'shorts_description': 'Full video processed with RoninClips AI.'
-        }
-        cursor.execute(
-            "INSERT INTO video_clips (long_video_id, start_time, end_time, hook_explanation) VALUES (%s, %s, %s, %s)",
-            (int(VIDEO_ID), '00:00:00.000', full_end, json.dumps(full_meta, ensure_ascii=False))
-        )
+        cursor.execute("UPDATE long_videos SET transcript = %s WHERE id = %s", (transcript_text, VIDEO_ID))
         db.commit()
-        print(f"   Inserted 1 full-video clip entry.")
-    else:
-        print("\nAnalyzing transcript with Groq LLM (Virality Scoring & Social Kit)...")
-        clip_count = SETTINGS.get('target_clip_count', 3)
-        prompt = f"""Analyze the following video transcript. Find up to {clip_count} highly engaging, self-contained clips suitable for short-form viral video (TikTok / Instagram Reels / YouTube Shorts).
+
+        # 4. Analyze — AI Clip Extraction OR Full Video Mode
+        cursor.execute("UPDATE long_videos SET status = 'analyzing' WHERE id = %s", (VIDEO_ID,))
+        db.commit()
+
+        if SETTINGS.get('full_video_mode', False):
+            print("\n🎬 FULL VIDEO MODE — Skipping AI clip extraction.")
+            duration_result = run_ffmpeg(
+                f'ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "{video["storage_path"]}"'
+            )
+            try:
+                total_seconds = float(duration_result.stdout.strip())
+            except Exception:
+                raise Exception(f"Could not determine video duration via ffprobe.")
+
+            full_end = format_seconds_ffmpeg(total_seconds)
+            print(f"   Video duration: {total_seconds:.2f}s ({full_end})")
+
+            full_meta = {
+                'title': 'Full Video Render',
+                'virality_score': 90,
+                'hook_strength': 90,
+                'pacing_energy': 90,
+                'shareability': 90,
+                'reason': 'Full Video — Subtitles & Rendered Effects',
+                'social_caption': 'Full length video with animated dynamic subtitles. 🔥 Watch now!',
+                'hashtags': '#fullvideo #content #roninclips #videoediting',
+                'shorts_description': 'Full video processed with RoninClips AI.'
+            }
+            cursor.execute(
+                "INSERT INTO video_clips (long_video_id, start_time, end_time, hook_explanation) VALUES (%s, %s, %s, %s)",
+                (int(VIDEO_ID), '00:00:00.000', full_end, json.dumps(full_meta, ensure_ascii=False))
+            )
+            db.commit()
+            print(f"   Inserted 1 full-video clip entry.")
+        else:
+            print("\nAnalyzing transcript with Groq LLM (Virality Scoring & Social Kit)...")
+            clip_count = SETTINGS.get('target_clip_count', 3)
+            prompt = f"""Analyze the following video transcript. Find up to {clip_count} highly engaging, self-contained clips suitable for short-form viral video (TikTok / Instagram Reels / YouTube Shorts).
 Each clip must be between 30 and 60 seconds long.
 Use the timestamps from the transcript to determine start and end times.
 For each clip, calculate a realistic Virality Score (1-100) with sub-scores, a high-CTR title, engaging social caption with emojis, trending hashtags, and YouTube Shorts description.
@@ -847,135 +914,137 @@ Return your answer STRICTLY in JSON format matching this structure without any m
 Transcript:
 {transcript_text[:8000]}"""
 
-        # Dynamically query active Groq models with preferred fallback order
-        preferred_order = [
-            "openai/gpt-oss-120b",
-            "llama-3.3-70b-versatile",
-            "openai/gpt-oss-20b",
-            "qwen/qwen3.6-27b",
-            "llama-3.1-8b-instant",
-            "qwen/qwen3-32b",
-            "groq/compound",
-            "groq/compound-mini",
-        ]
-        
-        custom_model = os.environ.get("GROQ_MODEL", "").strip()
-        groq_models = []
-        if custom_model:
-            groq_models.append(custom_model)
-
-        try:
-            live_models = client.models.list().data
-            active_chat_ids = [
-                m.id for m in live_models 
-                if not any(k in m.id.lower() for k in ['whisper', 'orpheus', 'tts', 'playai', 'guard', 'embedding'])
+            # Dynamically query active Groq models with preferred fallback order
+            preferred_order = [
+                "openai/gpt-oss-120b",
+                "llama-3.3-70b-versatile",
+                "openai/gpt-oss-20b",
+                "qwen/qwen3.6-27b",
+                "llama-3.1-8b-instant",
+                "qwen/qwen3-32b",
+                "groq/compound",
+                "groq/compound-mini",
             ]
-            for pref in preferred_order:
-                if pref in active_chat_ids and pref not in groq_models:
-                    groq_models.append(pref)
-            for m_id in active_chat_ids:
-                if m_id not in groq_models:
-                    groq_models.append(m_id)
-            print(f"  Live Groq models discovered: {len(active_chat_ids)} models available")
-        except Exception as query_err:
-            print(f"  ℹ️ Live model query skipped ({query_err}), using curated active fallback list.")
-            for pref in preferred_order:
-                if pref not in groq_models:
-                    groq_models.append(pref)
+            
+            custom_model = os.environ.get("GROQ_MODEL", "").strip()
+            groq_models = []
+            if custom_model:
+                groq_models.append(custom_model)
 
-        raw_response = None
-        last_error = None
-        for model_name in groq_models:
             try:
-                print(f"  Trying model: {model_name}...")
-                chat_completion = client.chat.completions.create(
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "You are an elite short-form video editor and viral strategist AI. You analyze transcripts, find the most viral moments, score them with precision, and generate high-converting social media copy. Always respond with valid JSON only, no markdown."
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt,
-                        }
-                    ],
-                    model=model_name,
-                    temperature=0.3,
+                live_models = client.models.list().data
+                active_chat_ids = [
+                    m.id for m in live_models 
+                    if not any(k in m.id.lower() for k in ['whisper', 'orpheus', 'tts', 'playai', 'guard', 'embedding'])
+                ]
+                for pref in preferred_order:
+                    if pref in active_chat_ids and pref not in groq_models:
+                        groq_models.append(pref)
+                for m_id in active_chat_ids:
+                    if m_id not in groq_models:
+                        groq_models.append(m_id)
+                print(f"  Live Groq models discovered: {len(active_chat_ids)} models available")
+            except Exception as query_err:
+                print(f"  ℹ️ Live model query skipped ({query_err}), using curated active fallback list.")
+                for pref in preferred_order:
+                    if pref not in groq_models:
+                        groq_models.append(pref)
+
+            raw_response = None
+            last_error = None
+            for model_name in groq_models:
+                try:
+                    print(f"  Trying model: {model_name}...")
+                    chat_completion = client.chat.completions.create(
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": "You are an elite short-form video editor and viral strategist AI. You analyze transcripts, find the most viral moments, score them with precision, and generate high-converting social media copy. Always respond with valid JSON only, no markdown."
+                            },
+                            {
+                                "role": "user",
+                                "content": prompt,
+                            }
+                        ],
+                        model=model_name,
+                        temperature=0.3,
+                    )
+                    raw_response = chat_completion.choices[0].message.content
+                    print(f"  Success with model: {model_name}")
+                    break
+                except Exception as model_err:
+                    last_error = model_err
+                    continue
+
+            if raw_response is None:
+                raise Exception(f"All Groq models failed. Last error: {last_error}.")
+
+            clips = parse_groq_json_response(raw_response)
+
+            print(f"Found {len(clips)} viral hook candidates with scoring & social kits.")
+
+            for clip in clips:
+                meta = {
+                    'title': clip.get('title', f"Viral Clip {clip.get('start', '')}"),
+                    'virality_score': int(clip.get('virality_score', 88)),
+                    'hook_strength': int(clip.get('hook_strength', 90)),
+                    'pacing_energy': int(clip.get('pacing_energy', 85)),
+                    'shareability': int(clip.get('shareability', 88)),
+                    'reason': clip.get('reason', 'High engagement segment'),
+                    'social_caption': clip.get('social_caption', ''),
+                    'hashtags': clip.get('hashtags', '#viral #shorts #trending'),
+                    'shorts_description': clip.get('shorts_description', '')
+                }
+                cursor.execute(
+                    "INSERT INTO video_clips (long_video_id, start_time, end_time, hook_explanation) VALUES (%s, %s, %s, %s)",
+                    (VIDEO_ID, clip['start'], clip['end'], json.dumps(meta))
                 )
-                raw_response = chat_completion.choices[0].message.content
-                print(f"  Success with model: {model_name}")
-                break
-            except Exception as model_err:
-                last_error = model_err
-                continue
+            db.commit()
 
-        if raw_response is None:
-            raise Exception(f"All Groq models failed. Last error: {last_error}.")
-
-        clean_json = raw_response.replace("```json", "").replace("```", "").strip()
-        clips = json.loads(clean_json)
-
-        print(f"Found {len(clips)} viral hook candidates with scoring & social kits.")
-
-        for clip in clips:
-            meta = {
-                'title': clip.get('title', f"Viral Clip {clip.get('start', '')}"),
-                'virality_score': int(clip.get('virality_score', 88)),
-                'hook_strength': int(clip.get('hook_strength', 90)),
-                'pacing_energy': int(clip.get('pacing_energy', 85)),
-                'shareability': int(clip.get('shareability', 88)),
-                'reason': clip.get('reason', 'High engagement segment'),
-                'social_caption': clip.get('social_caption', ''),
-                'hashtags': clip.get('hashtags', '#viral #shorts #trending'),
-                'shorts_description': clip.get('shorts_description', '')
-            }
-            cursor.execute(
-                "INSERT INTO video_clips (long_video_id, start_time, end_time, hook_explanation) VALUES (%s, %s, %s, %s)",
-                (VIDEO_ID, clip['start'], clip['end'], json.dumps(meta))
-            )
+        # 5. Render Clips with Parallel Processing
+        cursor.execute("UPDATE long_videos SET status = 'processing' WHERE id = %s", (VIDEO_ID,))
         db.commit()
 
-    # 5. Render Clips with Parallel Processing
-    cursor.execute("UPDATE long_videos SET status = 'processing' WHERE id = %s", (VIDEO_ID,))
-    db.commit()
+        cursor.execute("SELECT * FROM video_clips WHERE long_video_id = %s", (VIDEO_ID,))
+        saved_clips = cursor.fetchall()
 
-    cursor.execute("SELECT * FROM video_clips WHERE long_video_id = %s", (VIDEO_ID,))
-    saved_clips = cursor.fetchall()
+        output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'storage/app/public'))
+        temp_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'storage/app'))
+        os.makedirs(output_dir, exist_ok=True)
 
-    output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'storage/app/public'))
-    temp_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'storage/app'))
-    os.makedirs(output_dir, exist_ok=True)
+        src_width, src_height, src_fps = get_video_info(video['storage_path'])
+        print(f"\nSource video: {src_width}x{src_height} @ {src_fps:.1f}fps")
+        print(f"Total clips to render: {len(saved_clips)}")
 
-    src_width, src_height, src_fps = get_video_info(video['storage_path'])
-    print(f"\nSource video: {src_width}x{src_height} @ {src_fps:.1f}fps")
-    print(f"Total clips to render: {len(saved_clips)}")
+        # Multi-clip parallel execution (max 2 workers to balance CPU/VRAM usage)
+        if len(saved_clips) > 1:
+            print("⚡ Enabling Parallel Multi-Clip Rendering (2 concurrent workers)...")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [
+                    executor.submit(render_single_clip, sc, video, SETTINGS, whisper_model, encoder_flags, output_dir, temp_dir)
+                    for sc in saved_clips
+                ]
+                concurrent.futures.wait(futures)
+        elif len(saved_clips) == 1:
+            render_single_clip(saved_clips[0], video, SETTINGS, whisper_model, encoder_flags, output_dir, temp_dir)
 
-    # Multi-clip parallel execution (max 2 workers to balance CPU/VRAM usage)
-    if len(saved_clips) > 1:
-        print("⚡ Enabling Parallel Multi-Clip Rendering (2 concurrent workers)...")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            futures = [
-                executor.submit(render_single_clip, sc, video, SETTINGS, whisper_model, encoder_flags, output_dir, temp_dir)
-                for sc in saved_clips
-            ]
-            concurrent.futures.wait(futures)
-    elif len(saved_clips) == 1:
-        render_single_clip(saved_clips[0], video, SETTINGS, whisper_model, encoder_flags, output_dir, temp_dir)
-
-    cursor.execute("UPDATE long_videos SET status = 'completed' WHERE id = %s", (VIDEO_ID,))
-    db.commit()
-    print("\n🎉 Pipeline completed successfully!")
-
-except Exception as e:
-    print(f"Pipeline failed: {e}")
-    try:
-        cursor.execute("UPDATE long_videos SET status = 'failed' WHERE id = %s", (VIDEO_ID,))
+        cursor.execute("UPDATE long_videos SET status = 'completed' WHERE id = %s", (VIDEO_ID,))
         db.commit()
-    except Exception:
-        pass
-finally:
-    if 'audio_path' in locals() and os.path.exists(audio_path):
-        os.remove(audio_path)
-    db.close()
+        print("\n🎉 Pipeline completed successfully!")
 
-print("Pipeline process finished.")
+    except Exception as e:
+        print(f"Pipeline failed: {e}")
+        try:
+            cursor.execute("UPDATE long_videos SET status = 'failed' WHERE id = %s", (VIDEO_ID,))
+            db.commit()
+        except Exception:
+            pass
+    finally:
+        if 'audio_path' in locals() and os.path.exists(audio_path):
+            os.remove(audio_path)
+        db.close()
+
+    print("Pipeline process finished.")
+
+if __name__ == "__main__":
+    run_pipeline()

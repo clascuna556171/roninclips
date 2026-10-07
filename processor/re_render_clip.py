@@ -49,6 +49,8 @@ def generate_ass_subtitles(words, output_path, output_w=1080, output_h=1920,
         'hormozi_box': { 'active_color': '\\c&H00D7FF&', 'inactive_color': '\\c&HFFFFFF&', 'outline_size': 6, 'shadow_size': 4 },
         'karaoke_green': { 'active_color': '\\c&H00FF66&', 'inactive_color': '\\c&HFFFFFF&', 'outline_size': 5, 'shadow_size': 3 },
         'cyber_pink': { 'active_color': '\\c&HFF00FF&', 'inactive_color': '\\c&H00FFFF&', 'outline_size': 5, 'shadow_size': 3 },
+        'fire_gold': { 'active_color': '\\c&H0045FF&', 'inactive_color': '\\c&H00D7FF&', 'outline_size': 6, 'shadow_size': 3 },
+        'electric_violet': { 'active_color': '\\c&HF755A8&', 'inactive_color': '\\c&HFFFFFF&', 'outline_size': 5, 'shadow_size': 3 },
     }
     style_cfg = PALETTES.get(style_preset, PALETTES['yellow_pop'])
 
@@ -135,6 +137,12 @@ if __name__ == "__main__":
             SETTINGS.update(db_settings)
         except Exception:
             pass
+
+    # CLI style & position overrides if specified
+    if len(sys.argv) > 2 and sys.argv[2].strip():
+        SETTINGS['caption_style'] = sys.argv[2].strip()
+    if len(sys.argv) > 3 and sys.argv[3].strip():
+        SETTINGS['caption_position'] = sys.argv[3].strip()
             
     temp_dir = os.path.join(os.path.dirname(__file__), '..', 'storage/app')
     output_dir = os.path.join(temp_dir, 'public')
@@ -173,6 +181,18 @@ if __name__ == "__main__":
         layout_mode=SETTINGS.get('caption_layout', 'two_line')
     )
     
+    # Check if crop metadata or split screen was saved during initial processing
+    crop_info = None
+    if clip.get('crop_coordinates_json'):
+        try:
+            crop_info = json.loads(clip['crop_coordinates_json'])
+        except Exception:
+            crop_info = None
+
+    use_split_screen = crop_info.get('use_split_screen', False) if crop_info else False
+    saved_crop_filter = crop_info.get('crop_filter') if crop_info else None
+    saved_split_fc = crop_info.get('split_filter_complex') if crop_info else None
+
     filters = []
     probe = run_ffmpeg(f'ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "{intermediate_clip}"')
     try:
@@ -180,25 +200,49 @@ if __name__ == "__main__":
     except Exception:
         w, h = 1920, 1080
 
-    if SETTINGS['output_format'] == '9:16':
-        crop_h = h
-        crop_w = int(h * 9 / 16)
-        crop_w = crop_w - (crop_w % 2)
-        crop_x = (w - crop_w) // 2
-        filters.append(f"crop={crop_w}:{crop_h}:{crop_x}:0")
-        filters.append("scale=1080:1920:force_original_aspect_ratio=decrease")
-        filters.append("pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black")
+    if use_split_screen and saved_split_fc:
+        # Re-apply saved split-screen complex filter with updated subtitles
+        extra_vf = []
+        if os.path.exists(ass_path):
+            ass_ffmpeg = ffmpeg_escape_path(ass_path)
+            extra_vf.append(f"ass='{ass_ffmpeg}'")
+        full_fc = saved_split_fc
+        if extra_vf:
+            extra_chain = ",".join(extra_vf)
+            full_fc = saved_split_fc.replace('[outv]', f'[_splitraw];[_splitraw]{extra_chain}[outv]')
         
-    if os.path.exists(ass_path):
-        ass_ffmpeg = ffmpeg_escape_path(ass_path)
-        filters.append(f"ass='{ass_ffmpeg}'")
+        _, encoder_flags = detect_ffmpeg_encoder(preferred_accel=SETTINGS.get('hardware_accel', 'auto'))
+        run_ffmpeg(
+            f'ffmpeg -i "{intermediate_clip}" -filter_complex "{full_fc}" -map "[outv]" -map 0:a '
+            f'{encoder_flags} -c:a copy -y "{output_clip}"'
+        )
+    else:
+        if saved_crop_filter:
+            # Re-use exact face tracking crop
+            filters.append(saved_crop_filter)
+            if SETTINGS['output_format'] == '9:16':
+                filters.append("scale=1080:1920:force_original_aspect_ratio=decrease")
+                filters.append("pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black")
+        elif SETTINGS['output_format'] == '9:16':
+            # Fallback to center crop if no saved face tracking filter
+            crop_h = h
+            crop_w = int(h * 9 / 16)
+            crop_w = crop_w - (crop_w % 2)
+            crop_x = (w - crop_w) // 2
+            filters.append(f"crop={crop_w}:{crop_h}:{crop_x}:0")
+            filters.append("scale=1080:1920:force_original_aspect_ratio=decrease")
+            filters.append("pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black")
+            
+        if os.path.exists(ass_path):
+            ass_ffmpeg = ffmpeg_escape_path(ass_path)
+            filters.append(f"ass='{ass_ffmpeg}'")
+            
+        vf = ",".join(filters) if filters else "null"
+        _, encoder_flags = detect_ffmpeg_encoder(preferred_accel=SETTINGS.get('hardware_accel', 'auto'))
         
-    vf = ",".join(filters) if filters else "null"
-    _, encoder_flags = detect_ffmpeg_encoder(preferred_accel=SETTINGS.get('hardware_accel', 'auto'))
-    
-    run_ffmpeg(
-        f'ffmpeg -i "{intermediate_clip}" -vf "{vf}" {encoder_flags} -c:a copy -y "{output_clip}"'
-    )
+        run_ffmpeg(
+            f'ffmpeg -i "{intermediate_clip}" -vf "{vf}" {encoder_flags} -c:a copy -y "{output_clip}"'
+        )
     
     cursor.execute("UPDATE video_clips SET status = 'ready' WHERE id = %s", (CLIP_ID,))
     db.commit()
