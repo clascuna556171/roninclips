@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RoninClips — Local AI Video Clipper & Subtitle Studio</title>
+    <meta name="description" content="Extract viral hooks, generate animated subtitles, and crop to 9:16 vertical video. 100% local, 100% free. Powered by Faster-Whisper, Groq AI, and CUDA.">
+    <meta name="keywords" content="video clipper, AI subtitles, local AI, video editing, TikTok clips, vertical video, subtitle generator, RoninClips">
+    <meta property="og:title" content="RoninClips — Local AI Video Clipper & Subtitle Studio">
+    <meta property="og:description" content="Extract viral hooks, generate animated subtitles, and crop to 9:16 — 100% locally and free.">
+    <meta property="og:type" content="website">
+    <meta name="twitter:card" content="summary_large_image">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚔️</text></svg>">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Scanline overlay -->
+    <div class="scanlines" aria-hidden="true"></div>
+
+    <!-- Navigation -->
+    <nav class="nav" id="nav">
+        <div class="nav-inner">
+            <a href="#" class="nav-brand">
+                <span class="brand-glyph">⚔</span>
+                <span class="brand-text">RoninClips</span>
+            </a>
+            <div class="nav-links">
+                <a href="#features">Features</a>
+                <a href="#pipeline">Pipeline</a>
+                <a href="#install">Install</a>
+                <a href="https://github.com/clascuna556171/roninclips" target="_blank" rel="noopener" class="nav-gh">
+                    <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                    <span>GitHub</span>
+                </a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero -->
+    <section class="hero" id="hero">
+        <div class="hero-content">
+            <div class="hero-left">
+                <!-- Block-pixel ASCII banner from ascii.rest -->
+                <div class="hero-ascii-block" aria-label="RoninClips in block ASCII art">
+                    <svg class="ascii-banner-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 910 120" role="img" aria-label="RoninClips" xml:space="preserve">
+                        <style>text{font:16.67px ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;white-space:pre;dominant-baseline:central}.c0{fill:#6e6e73}.c1{fill:#fdfcfc}</style>
+                        <g>
+                            <text y="10" textLength="910"><tspan class="c1">██████</tspan><tspan class="c0">┓     </tspan><tspan class="c1">████</tspan><tspan class="c0">┓   </tspan><tspan class="c1">██</tspan><tspan class="c0">┓     </tspan><tspan class="c1">██</tspan><tspan class="c0">┓ </tspan><tspan class="c1">██</tspan><tspan class="c0">┓ </tspan><tspan class="c1">██</tspan><tspan class="c0">┓     </tspan><tspan class="c1">██</tspan><tspan class="c0">┓   </tspan><tspan class="c1">██████</tspan><tspan class="c0">┓ </tspan><tspan class="c1">██</tspan><tspan class="c0">┓       </tspan><tspan class="c1">██</tspan><tspan class="c0">┓ </tspan><tspan class="c1">██████</tspan><tspan class="c0">┓     </tspan><tspan class="c1">██████</tspan><tspan class="c0">┓</tspan></text>
+                            <text y="30" textLength="910"><tspan class="c1">██</tspan><tspan class="c0">┏━━━</tspan><tspan class="c1">██</tspan><tspan class="c0">┓ </tspan><tspan class="c1">██</tspan><tspan class="c0">┏━━━</tspan><tspan class="c1">██</tspan><tspan class="c0">┓ </tspan><tspan class="c1">████</tspan><tspan class="c0">┓   </tspan><tspan class="c1">██</tspan><tspan class="c0">┃ </tspan><tspan class="c1">██</tspan><tspan class="c0">┃ </tspan><tspan class="c1">████</tspan><tspan class="c0">┓   </tspan><tspan class="c1">██</tspan><tspan class="c0">┃ </tspan><tspan class="c1">██</tspan><tspan class="c0">┏━━━━━┛ </tspan><tspan class="c1">██</tspan><tspan class="c0">┃       </tspan><tspan class="c1">██</tspan><tspan class="c0">┃ </tspan><tspan class="c1">██</tspan><tspan class="c0">┏━━━</tspan><tspan class="c1">██</tspan><tspan class="c0">┓ </tspan><tspan class="c1">██</tspan><tspan class="c0">┏━━━━━┛</tspan></text>
+                            <text y="50" textLength="890"><tspan class="c1">██████</tspan><tspan class="c0">┏━┛ </tspan><tspan class="c1">██</tspan><tspan class="c0">┃   </tspan><tspan class="c1">██</tspan><tspan class="c0">┃ </tspan><tspan class="c1">██</tspan><tspan class="c0">┏━</tspan><tspan class="c1">██</tspan><tspan class="c0">┓ </tspan><tspan class="c1">██</tspan><tspan class="c0">┃ </tspan><tspan class="c1">██</tspan><tspan class="c0">┃ </tspan><tspan class="c1">██</tspan><tspan class="c0">┏━</tspan><tspan class="c1">██</tspan><tspan class="c0">┓ </tspan><tspan class="c1">██</tspan><tspan class="c0">┃ </tspan><tspan class="c1">██</tspan><tspan class="c0">┃       </tspan><tspan class="c1">██</tspan><tspan class="c0">┃       </tspan><tspan class="c1">██</tspan><tspan class="c0">┃ </tspan><tspan class="c1">██████</tspan><tspan class="c0">┏━┛ ┗━</tspan><tspan class="c1">████</tspan><tspan class="c0">┓</tspan></text>
+                            <text y="70" textLength="910"><tspan class="c1">██</tspan><tspan class="c0">┏━</tspan><tspan class="c1">██</tspan><tspan class="c0">┃   </tspan><tspan class="c1">██</tspan><tspan class="c0">┃   </tspan><tspan class="c1">██</tspan><tspan class="c0">┃ </tspan><tspan class="c1">██</tspan><tspan class="c0">┃ ┗━</tspan><tspan class="c1">████</tspan><tspan class="c0">┃ </tspan><tspan class="c1">██</tspan><tspan class="c0">┃ </tspan><tspan class="c1">██</tspan><tspan class="c0">┃ ┗━</tspan><tspan class="c1">████</tspan><tspan class="c0">┃ </tspan><tspan class="c1">██</tspan><tspan class="c0">┃       </tspan><tspan class="c1">██</tspan><tspan class="c0">┃       </tspan><tspan class="c1">██</tspan><tspan class="c0">┃ </tspan><tspan class="c1">██</tspan><tspan class="c0">┏━━━┛     ┗━━━</tspan><tspan class="c1">██</tspan><tspan class="c0">┓</tspan></text>
+                            <text y="90" textLength="910"><tspan class="c1">██</tspan><tspan class="c0">┃ ┗━</tspan><tspan class="c1">██</tspan><tspan class="c0">┓ ┗━</tspan><tspan class="c1">████</tspan><tspan class="c0">┏━┛ </tspan><tspan class="c1">██</tspan><tspan class="c0">┃   ┗━</tspan><tspan class="c1">██</tspan><tspan class="c0">┃ </tspan><tspan class="c1">██</tspan><tspan class="c0">┃ </tspan><tspan class="c1">██</tspan><tspan class="c0">┃   ┗━</tspan><tspan class="c1">██</tspan><tspan class="c0">┃ ┗━</tspan><tspan class="c1">██████</tspan><tspan class="c0">┓ </tspan><tspan class="c1">████████</tspan><tspan class="c0">┓ </tspan><tspan class="c1">██</tspan><tspan class="c0">┃ </tspan><tspan class="c1">██</tspan><tspan class="c0">┃       </tspan><tspan class="c1">██████</tspan><tspan class="c0">┏━┛</tspan></text>
+                            <text y="110" textLength="890"><tspan class="c0">┗━┛   ┗━┛   ┗━━━┛   ┗━┛     ┗━┛ ┗━┛ ┗━┛     ┗━┛   ┗━━━━━┛ ┗━━━━━━━┛ ┗━┛ ┗━┛       ┗━━━━━┛</tspan></text>
+                        </g>
+                    </svg>
+                </div>
+                <h1 class="hero-title">
+                    <span class="title-line">Extract viral hooks.</span>
+                    <span class="title-line">Generate subtitles.</span>
+                    <span class="title-line accent">100% local. 100% free.</span>
+                </h1>
+                <p class="hero-sub">
+                    AI-powered video clipper that runs entirely on your machine. 
+                    No cloud uploads, no subscriptions, no watermarks. 
+                    Just drop a video and ship clips.
+                </p>
+                <div class="hero-cta-row">
+                    <a href="#install" class="btn-primary">
+                        <span class="btn-char">&gt;</span> Get Started
+                    </a>
+                    <a href="https://github.com/clascuna556171/roninclips" target="_blank" rel="noopener" class="btn-ghost">
+                        View Source
+                    </a>
+                </div>
+                <div class="hero-badges">
+                    <span class="badge badge-cuda">CUDA Accelerated</span>
+                    <span class="badge badge-whisper">Faster-Whisper</span>
+                    <span class="badge badge-groq">Groq AI</span>
+                    <span class="badge badge-ffmpeg">FFmpeg</span>
+                </div>
+            </div>
+            <div class="hero-right">
+                <div class="terminal-window">
+                    <div class="terminal-chrome">
+                        <div class="terminal-dots">
+                            <span class="dot dot-r"></span>
+                            <span class="dot dot-y"></span>
+                            <span class="dot dot-g"></span>
+                        </div>
+                        <span class="terminal-title">ronin@local ~</span>
+                    </div>
+                    <div class="terminal-body">
+                        <div class="terminal-output" id="terminal-output"></div>
+                        <div class="terminal-cursor-line">
+                            <span class="prompt">$ </span>
+                            <span class="cursor-blink">█</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="hero-scroll-hint" aria-hidden="true">
+            <span>scroll</span>
+            <div class="scroll-arrow">↓</div>
+        </div>
+    </section>
+
+    <!-- Stats ribbon -->
+    <section class="stats-ribbon">
+        <div class="stats-inner">
+            <div class="stat">
+                <span class="stat-value">90+</span>
+                <span class="stat-label">Languages</span>
+            </div>
+            <div class="stat-divider">│</div>
+            <div class="stat">
+                <span class="stat-value">6</span>
+                <span class="stat-label">Subtitle Styles</span>
+            </div>
+            <div class="stat-divider">│</div>
+            <div class="stat">
+                <span class="stat-value">10x</span>
+                <span class="stat-label">CUDA Speedup</span>
+            </div>
+            <div class="stat-divider">│</div>
+            <div class="stat">
+                <span class="stat-value">$0</span>
+                <span class="stat-label">Forever</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features -->
+    <section class="features" id="features">
+        <div class="section-header">
+            <span class="section-tag">[FEATURES]</span>
+            <h2 class="section-title">Everything runs on your hardware.</h2>
+            <p class="section-sub">No cloud. No API limits. No waiting in queue.</p>
+        </div>
+        <div class="features-grid">
+            <div class="feature-card">
+                <div class="feature-icon-ascii">[+] 📈</div>
+                <h3>AI Virality Scoring</h3>
+                <p>1-100 scoring powered by Groq LLMs. Evaluates hook strength, pacing flow, and shareability with a 3-bar metric breakdown.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon-ascii">[+] 🟡</div>
+                <h3>Animated Subtitles</h3>
+                <p>Word-by-word highlighted pop synced to speech. 6 viral ASS presets — Yellow Pop, Neon Cyan, Hormozi Style, and more.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon-ascii">[+] 🎯</div>
+                <h3>Smart Face Tracking</h3>
+                <p>MediaPipe BlazeFace keeps the speaker centered in 9:16 crop. Auto-detects dual speakers for podcast split-screen.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon-ascii">[+] 🌐</div>
+                <h3>90+ Language Translation</h3>
+                <p>Offline speech-to-text in any language. Auto-translate to English subtitles without extra API calls or fees.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon-ascii">[+] ✏️</div>
+                <h3>Transcript Editor</h3>
+                <p>Fix mispronunciations in the word grid. Re-generates subtitles and re-burns the clip in seconds, no re-transcription.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon-ascii">[+] 🛡️</div>
+                <h3>Safe-Zone HUD</h3>
+                <p>Real-time overlay guides for TikTok, Reels, and Shorts. Your text and face never get clipped by platform UI.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon-ascii">[+] 🌀</div>
+                <h3>Punch-In Zoom & Ken Burns</h3>
+                <p>Dynamic 1.15x zoom on vocal climax spikes. Smooth continuous Ken Burns motion for cinematic feel.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon-ascii">[+] 📋</div>
+                <h3>1-Click Social Kit</h3>
+                <p>Auto-generates TikTok captions, Reels descriptions, trending hashtags, and YouTube Shorts copy. Batch export all clips.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Pipeline visualization -->
+    <section class="pipeline" id="pipeline">
+        <div class="section-header">
+            <span class="section-tag">[PIPELINE]</span>
+            <h2 class="section-title">Drop a video. Get clips.</h2>
+            <p class="section-sub">The full pipeline from raw footage to platform-ready vertical clips.</p>
+        </div>
+        <div class="pipeline-flow">
+            <div class="pipe-step">
+                <div class="pipe-num">01</div>
+                <div class="pipe-content">
+                    <h4>Ingest</h4>
+                    <p>Drop a URL or local file. RoninClips downloads and validates the source video.</p>
+                </div>
+            </div>
+            <div class="pipe-connector">──────</div>
+            <div class="pipe-step">
+                <div class="pipe-num">02</div>
+                <div class="pipe-content">
+                    <h4>Transcribe</h4>
+                    <p>Faster-Whisper extracts word-level timestamps with CUDA acceleration.</p>
+                </div>
+            </div>
+            <div class="pipe-connector">──────</div>
+            <div class="pipe-step">
+                <div class="pipe-num">03</div>
+                <div class="pipe-content">
+                    <h4>Analyze</h4>
+                    <p>Groq AI scores virality, identifies hooks, and generates social copy.</p>
+                </div>
+            </div>
+            <div class="pipe-connector">──────</div>
+            <div class="pipe-step">
+                <div class="pipe-num">04</div>
+                <div class="pipe-content">
+                    <h4>Render</h4>
+                    <p>FFmpeg crops 9:16, burns subtitles, applies effects, and exports final clips.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Tech stack -->
+    <section class="stack">
+        <div class="section-header">
+            <span class="section-tag">[STACK]</span>
+            <h2 class="section-title">Built with battle-tested tools.</h2>
+        </div>
+        <div class="stack-grid">
+            <div class="stack-item">
+                <span class="stack-name">Laravel 12</span>
+                <span class="stack-role">Web Framework</span>
+            </div>
+            <div class="stack-item">
+                <span class="stack-name">Python 3.10+</span>
+                <span class="stack-role">Processing Engine</span>
+            </div>
+            <div class="stack-item">
+                <span class="stack-name">Faster-Whisper</span>
+                <span class="stack-role">Speech-to-Text</span>
+            </div>
+            <div class="stack-item">
+                <span class="stack-name">Groq AI</span>
+                <span class="stack-role">LLM Analysis</span>
+            </div>
+            <div class="stack-item">
+                <span class="stack-name">MediaPipe</span>
+                <span class="stack-role">Face Tracking</span>
+            </div>
+            <div class="stack-item">
+                <span class="stack-name">FFmpeg + CUDA</span>
+                <span class="stack-role">Video Encoding</span>
+            </div>
+            <div class="stack-item">
+                <span class="stack-name">SQLite / MySQL</span>
+                <span class="stack-role">Database</span>
+            </div>
+            <div class="stack-item">
+                <span class="stack-name">ASS Subtitles</span>
+                <span class="stack-role">Animated Captions</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- Install -->
+    <section class="install" id="install">
+        <div class="section-header">
+            <span class="section-tag">[INSTALL]</span>
+            <h2 class="section-title">Up and running in 60 seconds.</h2>
+        </div>
+        <div class="install-methods">
+            <div class="install-card install-card-featured">
+                <div class="install-card-header">
+                    <span class="install-label">RECOMMENDED</span>
+                    <h3>Windows One-Click</h3>
+                </div>
+                <div class="code-block">
+                    <div class="code-chrome">
+                        <span class="code-lang">cmd</span>
+                        <button class="copy-btn" data-target="install-cmd" aria-label="Copy to clipboard">copy</button>
+                    </div>
+                    <pre id="install-cmd"><code>git clone https://github.com/clascuna556171/roninclips.git
+cd roninclips
+setup.bat</code></pre>
+                </div>
+                <p class="install-note">Then double-click <code>start.bat</code> → open <code>http://127.0.0.1:8000</code></p>
+            </div>
+            <div class="install-card">
+                <div class="install-card-header">
+                    <h3>PowerShell One-Liner</h3>
+                </div>
+                <div class="code-block">
+                    <div class="code-chrome">
+                        <span class="code-lang">powershell</span>
+                        <button class="copy-btn" data-target="install-ps" aria-label="Copy to clipboard">copy</button>
+                    </div>
+                    <pre id="install-ps"><code>iwr -useb https://raw.githubusercontent.com/clascuna556171/roninclips/main/install.ps1 | iex</code></pre>
+                </div>
+            </div>
+            <div class="install-card">
+                <div class="install-card-header">
+                    <h3>Manual (macOS / Linux)</h3>
+                </div>
+                <div class="code-block">
+                    <div class="code-chrome">
+                        <span class="code-lang">bash</span>
+                        <button class="copy-btn" data-target="install-bash" aria-label="Copy to clipboard">copy</button>
+                    </div>
+                    <pre id="install-bash"><code>git clone https://github.com/clascuna556171/roninclips.git
+cd roninclips && cp .env.example .env
+php artisan key:generate
+composer install && pip install -r processor/requirements.txt
+php artisan migrate && php artisan serve</code></pre>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA / Footer -->
+    <footer class="footer">
+        <div class="footer-inner">
+            <div class="footer-ascii" aria-hidden="true">
+<pre>
+╔══════════════════════════════════════════════════════════════╗
+║                                                              ║
+║   ⚔  RoninClips — Local AI Video Clipper & Subtitle Studio   ║
+║                                                              ║
+║   Your videos. Your hardware. Your clips.                    ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+</pre>
+            </div>
+            <div class="footer-links">
+                <a href="https://github.com/clascuna556171/roninclips" target="_blank" rel="noopener">GitHub</a>
+                <span class="footer-sep">·</span>
+                <a href="https://github.com/clascuna556171/roninclips/issues" target="_blank" rel="noopener">Issues</a>
+                <span class="footer-sep">·</span>
+                <a href="https://github.com/clascuna556171/roninclips/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a>
+            </div>
+            <p class="footer-credit">Built by <strong>Christian Lascuna</strong></p>
+        </div>
+    </footer>
+
+    <script src="main.js"></script>
+</body>
+</html>
