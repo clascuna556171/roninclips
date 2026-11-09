@@ -10,6 +10,7 @@ professional auto-ducking effect.
 import subprocess
 import os
 import sys
+import uuid
 
 # Import sibling module for audio analysis
 sys.path.insert(0, os.path.dirname(__file__))
@@ -41,7 +42,7 @@ def detect_speech_regions(audio_path, temp_dir=None, silence_threshold=0.02,
     if temp_dir is None:
         temp_dir = os.path.dirname(audio_path) or '.'
 
-    wav_path = os.path.join(temp_dir, '_temp_speech_detect.wav')
+    wav_path = os.path.join(temp_dir, f'_temp_speech_detect_{uuid.uuid4().hex[:8]}.wav')
 
     try:
         if not extract_wav_for_analysis(audio_path, wav_path):
@@ -265,17 +266,17 @@ def mix_background_music(clip_video_path, music_path, output_path,
         f"[0:a][music]amix=inputs=2:duration=first:dropout_transition=2"
     )
 
-    cmd = (
-        f'ffmpeg -i "{clip_video_path}" '
-        f'-stream_loop -1 -i "{music_path}" '
-        f'-filter_complex "{music_filter}" '
-        f'-c:v copy -c:a aac -b:a 192k '
-        f'-shortest '
-        f'"{output_path}" -y'
-    )
+    cmd = [
+        'ffmpeg', '-i', clip_video_path,
+        '-stream_loop', '-1', '-i', music_path,
+        '-filter_complex', music_filter,
+        '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
+        '-shortest',
+        output_path, '-y'
+    ]
 
     print(f"  [audio_mixer] Mixing background music with auto-ducking...")
-    result = subprocess.run(cmd, shell=True, capture_output=True, encoding='utf-8', errors='replace')
+    result = subprocess.run(cmd, capture_output=True, encoding='utf-8', errors='replace')
 
     if result.returncode != 0:
         print(f"  [audio_mixer] ⚠️ Music mixing failed: {result.stderr[-300:]}")

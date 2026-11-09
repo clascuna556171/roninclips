@@ -94,7 +94,7 @@ Ensure the following tools are installed on your system:
 
 ### 2. 🟡 Dynamic Animated Subtitles & Live Preview Simulator
 - **Word-by-Word Highlighted Pop**: Synchronized subtitle highlights inspired by Opus Clip and Alex Hormozi.
-- **6 Viral ASS Style Presets**: `Yellow Pop`, `Neon Cyan`, `Bold White`, `Hormozi Style`, `Karaoke Lime`, and `Cyber Pink`.
+- **8 Viral ASS Style Presets**: `Yellow Pop`, `Neon Cyan`, `Bold White`, `Hormozi Style`, `Karaoke Lime`, `Cyber Pink`, `Fire Gold`, and `Electric Violet`.
 - **Live 9:16 Phone Simulator**: Interactive widget updates subtitle fonts, positions (top, center, bottom), colors, and layouts in real-time.
 
 ### 3. 🛡️ Social Media Safe-Zone HUD Overlays
@@ -179,7 +179,7 @@ Then run: `php artisan migrate`
 
 ## 📚 Codebase Architecture & Navigation
 
-For a complete breakdown of every file, pipeline lifecycle, database schema, and architectural diagrams, refer to the [Master Codebase Map (CODETREE.md)](file:///c:/Users/Sebaz/roninclips/CODETREE.md).
+For a complete breakdown of every file, pipeline lifecycle, database schema, and architectural diagrams, refer to the [Master Codebase Map (CODETREE.md)](./CODETREE.md).
 
 ---
 

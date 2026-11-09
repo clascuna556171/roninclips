@@ -25,24 +25,31 @@ class VideoController extends Controller
     {
         $videos = LongVideo::with('clips')->latest()->get();
         $dbDriver = config('database.default', 'sqlite');
-        $groqModel = env('GROQ_MODEL', 'openai/gpt-oss-120b');
+        $groqModel = config('services.groq.model', 'openai/gpt-oss-120b');
+        $hasNvidia = file_exists('C:\\Windows\\System32\\nvidia-smi.exe') || file_exists('/usr/bin/nvidia-smi');
+        $hwBadge = $hasNvidia ? 'CUDA GPU' : 'CPU ENGINE';
         $activeJobsCount = $videos->whereNotIn('status', ['completed', 'failed'])->count();
         $totalClipsCount = $videos->sum(function($v) {
             return $v->clips->where('status', 'ready')->count();
         });
 
         return view('dashboard', compact(
-            'videos', 'dbDriver', 'groqModel', 'activeJobsCount', 'totalClipsCount'
+            'videos', 'dbDriver', 'groqModel', 'hwBadge', 'activeJobsCount', 'totalClipsCount'
         ));
     }
 
     public function browseFile(Request $request)
     {
         if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
+            $isAudio = $request->input('type') === 'audio';
+            $filter = $isAudio
+                ? 'Audio Files (*.mp3;*.wav;*.m4a;*.aac)|*.mp3;*.wav;*.m4a;*.aac|All Files (*.*)|*.*'
+                : 'MP4 Video (*.mp4)|*.mp4|All Video Files (*.mp4;*.mov;*.mkv)|*.mp4;*.mov;*.mkv|All Files (*.*)|*.*';
+            $title = $isAudio ? 'Select Background Music for RoninClips' : 'Select Video File for RoninClips';
             $psScript = '[System.Reflection.Assembly]::LoadWithPartialName("System.windows.forms") | Out-Null; ' .
                         '$f = New-Object System.Windows.Forms.OpenFileDialog; ' .
-                        '$f.Filter = "MP4 Video (*.mp4)|*.mp4|All Video Files (*.mp4;*.mov;*.mkv)|*.mp4;*.mov;*.mkv|All Files (*.*)|*.*"; ' .
-                        '$f.Title = "Select Video File for RoninClips"; ' .
+                        '$f.Filter = "' . $filter . '"; ' .
+                        '$f.Title = "' . $title . '"; ' .
                         'if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.FileName }';
             $cmd = 'powershell.exe -NoProfile -NonInteractive -Command "' . $psScript . '"';
             $selectedPath = trim(shell_exec($cmd) ?? '');
@@ -100,7 +107,17 @@ class VideoController extends Controller
             'processing_settings' => $settings,
         ]);
 
-        // Start the process completely detached from PHP
+        $this->dispatchEngineProcess($video);
+
+        return redirect()->back()->with('success', 'Processing started for ' . $video->filename);
+    }
+
+    private function dispatchEngineProcess(LongVideo $video): void
+    {
+        if (app()->runningUnitTests()) {
+            return;
+        }
+
         $pythonPath = $this->getPythonBinary();
         $scriptPath = base_path('processor/engine.py');
         $logFile = storage_path('logs/engine_' . $video->id . '.log');
@@ -111,8 +128,32 @@ class VideoController extends Controller
             $cmd = escapeshellarg($pythonPath) . ' ' . escapeshellarg($scriptPath) . ' ' . escapeshellarg($video->id);
             exec($cmd . ' > ' . escapeshellarg($logFile) . ' 2>&1 &');
         }
+    }
 
-        return redirect()->back()->with('success', 'Processing started for ' . $video->filename);
+    public function retry($id)
+    {
+        $video = LongVideo::with('clips')->findOrFail($id);
+
+        if (!$video->storage_path || !file_exists($video->storage_path)) {
+            return redirect()->back()->with('error', 'Cannot retry: Source video file no longer exists at ' . $video->storage_path);
+        }
+
+        foreach ($video->clips as $clip) {
+            $this->cleanupClipFiles($clip);
+            $clip->delete();
+        }
+
+        $logFile = storage_path('logs/engine_' . $video->id . '.log');
+        if (file_exists($logFile)) {
+            @unlink($logFile);
+        }
+
+        $video->status = 'pending';
+        $video->save();
+
+        $this->dispatchEngineProcess($video);
+
+        return redirect()->back()->with('success', 'Re-started pipeline for ' . $video->filename);
     }
 
     public function getLogs($id)
@@ -185,14 +226,27 @@ class VideoController extends Controller
         ]);
     }
 
+    private function cleanupClipFiles(\App\Models\VideoClip $clip): void
+    {
+        $filesToDelete = [
+            $clip->output_path ? base_path($clip->output_path) : null,
+            storage_path("app/intermediate_{$clip->id}.mp4"),
+            storage_path("app/clip_{$clip->id}_words.json"),
+            storage_path("app/clip_{$clip->id}.ass"),
+            storage_path("logs/re_render_{$clip->id}.log"),
+        ];
+
+        foreach ($filesToDelete as $file) {
+            if ($file && file_exists($file)) {
+                @unlink($file);
+            }
+        }
+    }
+
     public function destroyClip(Request $request, $id)
     {
         $clip = \App\Models\VideoClip::findOrFail($id);
-        
-        if ($clip->output_path && file_exists(base_path($clip->output_path))) {
-            @unlink(base_path($clip->output_path));
-        }
-        
+        $this->cleanupClipFiles($clip);
         $clip->delete();
         
         return redirect()->back()->with('success', 'Clip removed successfully.');
@@ -203,9 +257,7 @@ class VideoController extends Controller
         $video = \App\Models\LongVideo::with('clips')->findOrFail($id);
         
         foreach ($video->clips as $clip) {
-            if ($clip->output_path && file_exists(base_path($clip->output_path))) {
-                @unlink(base_path($clip->output_path));
-            }
+            $this->cleanupClipFiles($clip);
             $clip->delete();
         }
         
@@ -222,6 +274,16 @@ class VideoController extends Controller
         $video->delete();
         
         return redirect()->back()->with('success', 'Video and all clips removed successfully.');
+    }
+
+    public function getClipStatus($id)
+    {
+        $clip = \App\Models\VideoClip::findOrFail($id);
+        return response()->json([
+            'id' => $clip->id,
+            'status' => $clip->status,
+            'updated_at' => $clip->updated_at?->timestamp ?? time(),
+        ]);
     }
 
     public function openExplorer($id)
@@ -252,9 +314,12 @@ class VideoController extends Controller
         $clip = \App\Models\VideoClip::findOrFail($id);
         
         $request->validate([
-            'words' => 'required|array',
-            'caption_style' => 'nullable|string',
-            'caption_position' => 'nullable|string'
+            'words' => 'required|array|min:1',
+            'words.*.word' => 'required|string|max:120',
+            'words.*.start' => 'required|numeric|min:0',
+            'words.*.end' => 'required|numeric|min:0',
+            'caption_style' => 'nullable|string|in:yellow_pop,neon_cyan,bold_white,hormozi_box,karaoke_green,cyber_pink,fire_gold,electric_violet',
+            'caption_position' => 'nullable|string|in:bottom,center,top',
         ]);
 
         // Save updated words

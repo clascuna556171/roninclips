@@ -7,6 +7,7 @@ Supports SQLite & MySQL via db_helper and GPU hardware encoding via hw_accel.
 
 import sys
 import os
+import re
 import subprocess
 import json
 from dotenv import load_dotenv
@@ -19,96 +20,15 @@ if sys.platform == 'win32':
 sys.path.insert(0, os.path.dirname(__file__))
 from db_helper import get_db
 from hw_accel import detect_ffmpeg_encoder
+from subtitles import generate_ass_subtitles, format_ass_time, ffmpeg_escape_path
 
 CLIP_ID = sys.argv[1] if len(sys.argv) > 1 else None
 
 def run_ffmpeg(cmd, **kwargs):
-    kwargs.setdefault('shell', True)
+    kwargs.setdefault('shell', isinstance(cmd, str))
     kwargs.setdefault('capture_output', True)
     kwargs.pop('text', None)
     return subprocess.run(cmd, encoding='utf-8', errors='replace', **kwargs)
-
-def format_ass_time(seconds):
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = seconds % 60
-    return f"{h}:{m:02d}:{s:05.2f}"
-
-def ffmpeg_escape_path(path):
-    p = path.replace('\\', '/')
-    p = p.replace(':', '\\:')
-    return p
-
-def generate_ass_subtitles(words, output_path, output_w=1080, output_h=1920,
-                            style_preset='yellow_pop', font_family='Arial Black',
-                            position='bottom', layout_mode='two_line'):
-    PALETTES = {
-        'yellow_pop': { 'active_color': '\\c&H00FFFF&', 'inactive_color': '\\c&HFFFFFF&', 'outline_size': 4, 'shadow_size': 2 },
-        'neon_cyan': { 'active_color': '\\c&HFFFF00&', 'inactive_color': '\\c&HEEEEEE&', 'outline_size': 4, 'shadow_size': 2 },
-        'bold_white': { 'active_color': '\\c&H00FF00&', 'inactive_color': '\\c&HFFFFFF&', 'outline_size': 5, 'shadow_size': 3 },
-        'hormozi_box': { 'active_color': '\\c&H00D7FF&', 'inactive_color': '\\c&HFFFFFF&', 'outline_size': 6, 'shadow_size': 4 },
-        'karaoke_green': { 'active_color': '\\c&H00FF66&', 'inactive_color': '\\c&HFFFFFF&', 'outline_size': 5, 'shadow_size': 3 },
-        'cyber_pink': { 'active_color': '\\c&HFF00FF&', 'inactive_color': '\\c&H00FFFF&', 'outline_size': 5, 'shadow_size': 3 },
-        'fire_gold': { 'active_color': '\\c&H0045FF&', 'inactive_color': '\\c&H00D7FF&', 'outline_size': 6, 'shadow_size': 3 },
-        'electric_violet': { 'active_color': '\\c&HF755A8&', 'inactive_color': '\\c&HFFFFFF&', 'outline_size': 5, 'shadow_size': 3 },
-    }
-    style_cfg = PALETTES.get(style_preset, PALETTES['yellow_pop'])
-
-    if layout_mode == 'single_word':
-        chunk_size = 1; font_size = max(60, int(output_h / 18))
-    elif layout_mode == 'full_line':
-        chunk_size = 7; font_size = max(40, int(output_h / 28))
-    else:
-        chunk_size = 4; font_size = max(48, int(output_h / 24))
-
-    pos = str(position).lower()
-    if pos == 'top': alignment = 8; margin_v = int(output_h * 0.10)
-    elif pos == 'center': alignment = 5; margin_v = 0
-    else: alignment = 2; margin_v = int(output_h * 0.14)
-
-    outline_val = style_cfg['outline_size']; shadow_val = style_cfg['shadow_size']
-    font_name = font_family.strip() if font_family else 'Arial Black'
-
-    ass_header = f"""[Script Info]
-ScriptType: v4.00+
-PlayResX: {output_w}
-PlayResY: {output_h}
-WrapStyle: 0
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{font_name},{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,{outline_val},{shadow_val},{alignment},20,20,{margin_v},1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-    chunks = [words[i:i + chunk_size] for i in range(0, len(words), chunk_size)]
-    events = []
-    for chunk in chunks:
-        chunk_end = chunk[-1]['end']
-        for i, current_word in enumerate(chunk):
-            event_start = current_word['start']
-            event_end = chunk[i + 1]['start'] if i < len(chunk) - 1 else chunk_end
-            if event_end - event_start < 0.05: event_end = event_start + 0.15
-            
-            parts = []
-            for j, w in enumerate(chunk):
-                word_text = w['word'].strip().upper()
-                if not word_text: continue
-                line_prefix = "\\N " if (layout_mode == 'two_line' and j == 2) else ""
-                if j == i:
-                    parts.append(f"{line_prefix}{{{style_cfg['active_color']}\\fscx115\\fscy115}}{word_text}{{{style_cfg['inactive_color']}\\fscx100\\fscy100}}")
-                else:
-                    parts.append(line_prefix + word_text)
-            
-            text = " ".join(parts)
-            if text.strip():
-                start_str, end_str = format_ass_time(event_start), format_ass_time(event_end)
-                events.append(f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{text}")
-
-    with open(output_path, 'w', encoding='utf-8-sig') as f:
-        f.write(ass_header + '\n'.join(events) + '\n')
-    return len(events)
 
 if __name__ == "__main__":
     if not CLIP_ID:
@@ -153,13 +73,13 @@ if __name__ == "__main__":
 
     # If intermediate clip does not exist, recreate it from source video
     if not os.path.exists(intermediate_clip) and video and os.path.exists(video.get('storage_path', '')):
-        start_val = clip.get('start_time', '00:00:00')
-        end_val = clip.get('end_time', '00:00:30')
-        run_ffmpeg(
-            f'ffmpeg -i "{video["storage_path"]}" -ss {start_val} -to {end_val} '
-            f'-c:v libx264 -preset veryfast -crf 20 -c:a aac -b:a 128k '
-            f'-avoid_negative_ts make_zero "{intermediate_clip}" -y'
-        )
+        start_val = str(clip.get('start_time', '00:00:00'))
+        end_val = str(clip.get('end_time', '00:00:30'))
+        run_ffmpeg([
+            'ffmpeg', '-i', video['storage_path'], '-ss', start_val, '-to', end_val,
+            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '128k',
+            '-avoid_negative_ts', 'make_zero', intermediate_clip, '-y'
+        ])
 
     try:
         with open(words_json_path, 'r', encoding='utf-8') as f:
@@ -191,10 +111,14 @@ if __name__ == "__main__":
 
     use_split_screen = crop_info.get('use_split_screen', False) if crop_info else False
     saved_crop_filter = crop_info.get('crop_filter') if crop_info else None
+    saved_zoom_filter = crop_info.get('zoom_filter') if crop_info else None
     saved_split_fc = crop_info.get('split_filter_complex') if crop_info else None
 
     filters = []
-    probe = run_ffmpeg(f'ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "{intermediate_clip}"')
+    probe = run_ffmpeg([
+        'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+        '-show_entries', 'stream=width,height', '-of', 'csv=s=x:p=0', intermediate_clip
+    ])
     try:
         w, h = map(int, probe.stdout.strip().split('x'))
     except Exception:
@@ -203,6 +127,8 @@ if __name__ == "__main__":
     if use_split_screen and saved_split_fc:
         # Re-apply saved split-screen complex filter with updated subtitles
         extra_vf = []
+        if saved_zoom_filter:
+            extra_vf.append(saved_zoom_filter)
         if os.path.exists(ass_path):
             ass_ffmpeg = ffmpeg_escape_path(ass_path)
             extra_vf.append(f"ass='{ass_ffmpeg}'")
@@ -233,6 +159,9 @@ if __name__ == "__main__":
             filters.append("scale=1080:1920:force_original_aspect_ratio=decrease")
             filters.append("pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black")
             
+        if saved_zoom_filter:
+            filters.append(saved_zoom_filter)
+
         if os.path.exists(ass_path):
             ass_ffmpeg = ffmpeg_escape_path(ass_path)
             filters.append(f"ass='{ass_ffmpeg}'")
@@ -244,7 +173,13 @@ if __name__ == "__main__":
             f'ffmpeg -i "{intermediate_clip}" -vf "{vf}" {encoder_flags} -c:a copy -y "{output_clip}"'
         )
     
-    cursor.execute("UPDATE video_clips SET status = 'ready' WHERE id = %s", (CLIP_ID,))
+    if os.path.exists(ass_path):
+        try:
+            os.remove(ass_path)
+        except Exception:
+            pass
+
+    cursor.execute("UPDATE video_clips SET status = 'ready', updated_at = CURRENT_TIMESTAMP WHERE id = %s", (CLIP_ID,))
     db.commit()
     db.close()
     print(f"Re-render completed for clip {CLIP_ID}")

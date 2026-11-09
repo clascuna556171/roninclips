@@ -69,10 +69,11 @@ if (!fs.existsSync(sqlitePath)) {
   fs.writeFileSync(sqlitePath, '');
 }
 
-// Ensure database migration
-console.log('\n[3/3] Running database migrations...');
+// Ensure database migration & storage symlink
+console.log('\n[3/3] Running database migrations and linking storage...');
 try {
   execSync('php artisan migrate --force', { cwd: rootDir, stdio: 'inherit' });
+  execSync('php artisan storage:link', { cwd: rootDir, stdio: 'ignore' });
 } catch (e) {}
 
 console.log('\n========================================================');

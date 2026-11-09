@@ -9,6 +9,7 @@ import json
 import struct
 import wave
 import os
+import uuid
 import numpy as np
 
 
@@ -99,7 +100,7 @@ def detect_volume_spikes(audio_path, threshold_multiplier=1.5, min_spike_duratio
     if temp_dir is None:
         temp_dir = os.path.dirname(audio_path)
 
-    wav_path = os.path.join(temp_dir, '_temp_analysis.wav')
+    wav_path = os.path.join(temp_dir, f'_temp_analysis_{uuid.uuid4().hex[:8]}.wav')
 
     try:
         if not extract_wav_for_analysis(audio_path, wav_path):
@@ -197,7 +198,7 @@ def generate_punchin_filter(spikes, total_duration, input_w, input_h,
     # For longer videos/clips, cap to the top 12 most prominent spikes
     # to prevent FFmpeg filter expression parsing failure and stack overflow.
     if len(spikes) > 12:
-        spikes = sorted(spikes, key=lambda s: s.get('peak', 0), reverse=True)[:12]
+        spikes = sorted(spikes, key=lambda s: s.get('intensity', s.get('peak', 0)), reverse=True)[:12]
         spikes = sorted(spikes, key=lambda s: s['start'])
 
     # Build a zoom expression using FFmpeg's expression syntax

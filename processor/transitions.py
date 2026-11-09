@@ -268,17 +268,17 @@ def apply_whip_pan_transitions(input_video, output_video, cut_points=None,
     all_filters = filter_parts + audio_parts
     filter_complex = ";".join(all_filters)
 
-    cmd = (
-        f'ffmpeg -i "{input_video}" '
-        f'-filter_complex "{filter_complex}" '
-        f'-map "[outv]" -map "[outa]" '
-        f'-c:v libx264 -preset medium -crf 22 '
-        f'-profile:v high -level 4.0 -pix_fmt yuv420p '
-        f'-c:a aac -b:a 128k -movflags +faststart '
-        f'"{output_video}" -y'
-    )
+    cmd = [
+        'ffmpeg', '-i', input_video,
+        '-filter_complex', filter_complex,
+        '-map', '[outv]', '-map', '[outa]',
+        '-c:v', 'libx264', '-preset', 'medium', '-crf', '22',
+        '-profile:v', 'high', '-level', '4.0', '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart',
+        output_video, '-y'
+    ]
 
-    result = subprocess.run(cmd, shell=True, capture_output=True, encoding='utf-8', errors='replace')
+    result = subprocess.run(cmd, capture_output=True, encoding='utf-8', errors='replace')
 
     if result.returncode != 0:
         print(f"  [transitions] ⚠️ Whip-pan transition failed: {result.stderr[-300:]}")

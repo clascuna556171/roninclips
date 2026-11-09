@@ -4,9 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>RoninClips — Local AI Video Clipper</title>
-    <link rel="stylesheet" href="{{ asset('css/app.css') }}?v={{ time() }}">
-    <!-- Lucide Icons -->
-    <script src="https://unpkg.com/lucide@latest"></script>
+    <link rel="stylesheet" href="{{ asset('css/app.css') }}?v={{ file_exists(public_path('css/app.css')) ? filemtime(public_path('css/app.css')) : 1 }}">
+    <!-- Local Lucide Icons Bundle (100% Offline Ready) -->
+    <script src="{{ asset('js/lucide.min.js') }}"></script>
 </head>
 <body>
 
@@ -41,9 +41,9 @@
 
             <!-- Real-Time Hardware & Model System Status Badges -->
             <div class="sidebar-hud-row">
-                <div class="hud-pill hud-pill-cuda" title="GPU Acceleration Engine">
+                <div class="hud-pill hud-pill-cuda" title="Acceleration Engine">
                     <i data-lucide="cpu" class="icon-sm"></i>
-                    <span>CUDA GPU</span>
+                    <span>{{ $hwBadge ?? 'CUDA GPU' }}</span>
                 </div>
                 <div class="hud-pill hud-pill-llm" title="Active Groq LLM Model">
                     <i data-lucide="bot" class="icon-sm"></i>
@@ -121,7 +121,7 @@
 
                 <!-- Pipeline Settings Accordion -->
                 <div class="settings-panel">
-                    <div class="settings-header" id="settings-toggle">
+                    <div class="settings-header" id="settings-toggle" role="button" tabindex="0" aria-expanded="true" aria-controls="settings-body" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}">
                         <div style="display: flex; align-items: center; gap: 6px;">
                             <i data-lucide="sliders" class="icon-sm" style="color: #38bdf8;"></i>
                             <span>[ PIPELINE SETTINGS ]</span>
@@ -290,6 +290,31 @@
                                         <small>Motion-blur scene change cuts</small>
                                     </span>
                                 </label>
+                                <div class="form-group" id="transition-speed-group" style="display: none; margin: 2px 0 6px 22px;">
+                                    <label for="transition_speed" style="font-size: 10px;">Transition Speed</label>
+                                    <select id="transition_speed" name="transition_speed" class="text-input" style="padding: 4px 8px;">
+                                        <option value="0.15">⚡ 0.15s (Snap Whip)</option>
+                                        <option value="0.25" selected>🎬 0.25s (Balanced)</option>
+                                        <option value="0.35">🌊 0.35s (Smooth Slide)</option>
+                                    </select>
+                                </div>
+                                <label class="toggle-label" for="background_music">
+                                    <input type="checkbox" id="background_music" name="background_music" value="1" class="toggle-checkbox">
+                                    <span class="toggle-status"></span>
+                                    <span class="toggle-text">
+                                        <strong>BGM Auto-Ducking</strong>
+                                        <small>Ducks music when speaker talks</small>
+                                    </span>
+                                </label>
+                                <div class="form-group" id="bgm-path-group" style="display: none; margin: 2px 0 6px 22px;">
+                                    <label for="bgm_path" style="font-size: 10px;">Background Music File (.mp3/.wav)</label>
+                                    <div style="display: flex; gap: 4px;">
+                                        <input type="text" id="bgm_path" name="bgm_path" class="text-input" placeholder="C:\Users\...\music.mp3" style="padding: 4px 8px;">
+                                        <button type="button" class="btn-input-action btn-browse" onclick="triggerBrowseFile(this, 'bgm_path', 'audio')" title="Browse audio file">
+                                            <i data-lucide="music" class="icon-sm"></i> BROWSE
+                                        </button>
+                                    </div>
+                                </div>
                                 <label class="toggle-label" for="split_screen">
                                     <input type="checkbox" id="split_screen" name="split_screen" value="1" class="toggle-checkbox">
                                     <span class="toggle-status"></span>
@@ -318,6 +343,7 @@
                                     <option value="base">Base (Fast Transcription)</option>
                                     <option value="small" selected>Small (Balanced - Recommended)</option>
                                     <option value="medium">Medium (Maximum Accuracy)</option>
+                                    <option value="large-v3">Large-v3 (Studio Grade)</option>
                                 </select>
                             </div>
                         </div>
@@ -465,12 +491,12 @@
                             })->implode("\n\n" . str_repeat("=", 32) . "\n\n");
                         @endphp
                         <div class="video-card" data-video-id="{{ $video->id }}">
-                            <div class="folder-header" onclick="toggleFolder({{ $video->id }})">
+                            <div class="folder-header" role="button" tabindex="0" aria-expanded="{{ $isFirst ? 'true' : 'false' }}" onclick="toggleFolder({{ $video->id }})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleFolder({{ $video->id }});}">
                                 <div class="folder-title">
                                     <i data-lucide="folder" class="icon-sm" style="color: #ff9f0a;"></i>
                                     <span>{{ $video->filename }}</span>
                                 </div>
-                                <div class="folder-meta-group" onclick="event.stopPropagation()">
+                                <div class="folder-meta-group" onclick="event.stopPropagation()" onkeydown="event.stopPropagation()">
                                     <span class="status-badge status-{{ strtolower($video->status) }}">
                                         {{ $video->status }}
                                     </span>
@@ -482,6 +508,14 @@
                                             <i data-lucide="flame" class="icon-sm"></i> TOP: {{ $topScore }}/100
                                         </span>
                                     @endif
+                                    @if(strtolower($video->status) === 'failed')
+                                        <form action="{{ route('videos.retry', $video->id) }}" method="POST" style="margin:0;">
+                                            @csrf
+                                            <button type="submit" class="btn-input-action" title="Retry processing this video with saved settings" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);">
+                                                <i data-lucide="rotate-cw" class="icon-sm"></i> RETRY
+                                            </button>
+                                        </form>
+                                    @endif
                                     @if($video->clips->count() > 0)
                                         <button type="button" class="btn-input-action" onclick="copyPostText({{ json_encode($allPostsText) }}, this)" title="Copy Social Media Posts for ALL Clips in this Video" style="color: #ff9f0a; border-color: rgba(255, 159, 10, 0.4);">
                                             <i data-lucide="copy" class="icon-sm"></i> COPY ALL POSTS
@@ -490,7 +524,7 @@
                                     <form action="{{ route('videos.destroy', $video->id) }}" method="POST" onsubmit="return confirm('Delete this video and all associated clips?');" style="margin:0;">
                                         @csrf
                                         @method('DELETE')
-                                        <button type="submit" class="button-danger-sm" title="Delete Video & Clips">
+                                        <button type="submit" class="button-danger-sm" title="Delete Video & Clips" aria-label="Delete Video {{ $video->filename }}">
                                             <i data-lucide="trash-2" class="icon-sm"></i>
                                         </button>
                                     </form>
@@ -516,7 +550,8 @@
                                         @foreach($video->clips as $cIndex => $clip)
                                             @php
                                                 $hasVideo = $clip->output_path && file_exists(base_path($clip->output_path));
-                                                $webPath = $hasVideo ? asset(str_replace('storage/app/public/', 'storage/', $clip->output_path)) : '';
+                                                $clipVer = $clip->updated_at ? $clip->updated_at->timestamp : 1;
+                                                $webPath = $hasVideo ? (asset(str_replace('storage/app/public/', 'storage/', $clip->output_path)) . '?v=' . $clipVer) : '';
                                                 $absPath = $clip->output_path ? base_path($clip->output_path) : '';
                                                 $meta = $clip->metadata;
                                                 $vScore = $clip->virality_score;
@@ -608,7 +643,7 @@
                                                         <form action="{{ route('clips.destroy', $clip->id) }}" method="POST" onsubmit="return confirm('Delete this clip?');" style="margin:0;">
                                                             @csrf
                                                             @method('DELETE')
-                                                            <button type="submit" class="button-danger-sm" title="Delete Clip">
+                                                            <button type="submit" class="button-danger-sm" title="Delete Clip" aria-label="Delete Clip #{{ $cIndex + 1 }}">
                                                                 <i data-lucide="trash-2" class="icon-sm"></i>
                                                             </button>
                                                         </form>
@@ -648,7 +683,7 @@
                         <button type="button" class="safe-zone-btn" onclick="setSafeZoneGuide('shorts', this)">Shorts</button>
                     </div>
                 </div>
-                <button type="button" class="video-modal-close" onclick="closeCinemaModal()"><i data-lucide="x" class="icon-md"></i></button>
+                <button type="button" class="video-modal-close" onclick="closeCinemaModal()" aria-label="Close clip preview modal"><i data-lucide="x" class="icon-md"></i></button>
             </div>
             <div class="video-modal-body">
                 <div class="modal-video-container">
@@ -703,7 +738,7 @@
                     <i data-lucide="file-edit" class="icon-md" style="color: #bf5af2;"></i>
                     <span>[ WORD-LEVEL TRANSCRIPT & SUBTITLE EDITOR ]</span>
                 </div>
-                <button type="button" class="video-modal-close" onclick="closeSubsEditor()"><i data-lucide="x" class="icon-md"></i></button>
+                <button type="button" class="video-modal-close" onclick="closeSubsEditor()" aria-label="Close subtitle editor modal"><i data-lucide="x" class="icon-md"></i></button>
             </div>
             <div class="video-modal-body" style="flex-direction: column; padding: 14px;">
                 <p style="color: var(--color-text-secondary); font-size: 11px; margin-bottom: 8px;">
@@ -789,6 +824,23 @@
             kenBurns.addEventListener('change', () => { if (kenBurns.checked) punchIn.checked = false; });
         }
 
+        // Toggle conditional sub-inputs for Whip-Pan Speed & BGM Path
+        const whipPanToggle = document.getElementById('whip_pan_transitions');
+        const transitionSpeedGroup = document.getElementById('transition-speed-group');
+        const bgmToggle = document.getElementById('background_music');
+        const bgmPathGroup = document.getElementById('bgm-path-group');
+
+        function syncConditionalSettings() {
+            if (whipPanToggle && transitionSpeedGroup) {
+                transitionSpeedGroup.style.display = whipPanToggle.checked ? 'flex' : 'none';
+            }
+            if (bgmToggle && bgmPathGroup) {
+                bgmPathGroup.style.display = bgmToggle.checked ? 'flex' : 'none';
+            }
+        }
+        if (whipPanToggle) whipPanToggle.addEventListener('change', syncConditionalSettings);
+        if (bgmToggle) bgmToggle.addEventListener('change', syncConditionalSettings);
+
         // ─── 2. Presets Manager ───
         function applyPreset(preset, btn) {
             document.querySelectorAll('.preset-card-btn').forEach(b => b.classList.remove('active'));
@@ -844,6 +896,7 @@
                 if (captionStyle) captionStyle.value = 'hormozi_box';
             }
 
+            if (typeof syncConditionalSettings === 'function') syncConditionalSettings();
             if (typeof updateSubtitleSimulator === 'function') updateSubtitleSimulator();
         }
 
@@ -915,7 +968,7 @@
         }
 
         // ─── 4. Native File Picker & Clipboard ───
-        async function triggerBrowseFile(btn) {
+        async function triggerBrowseFile(btn, targetInputId = 'video_path', fileType = 'video') {
             const originalHtml = btn.innerHTML;
             btn.innerHTML = '<i data-lucide="loader" class="icon-sm" style="animation: spin 1s linear infinite;"></i> OPENING...';
             if (window.lucide) lucide.createIcons();
@@ -925,11 +978,12 @@
                     headers: {
                         'Content-Type': 'application/json',
                         'X-CSRF-TOKEN': '{{ csrf_token() }}'
-                    }
+                    },
+                    body: JSON.stringify({ type: fileType })
                 });
                 const data = await response.json();
                 if (data.success && data.file_path) {
-                    const input = document.getElementById('video_path');
+                    const input = document.getElementById(targetInputId);
                     if (input) {
                         input.value = data.file_path;
                         input.focus();
@@ -1350,11 +1404,8 @@
                 });
                 const data = await res.json();
                 if (res.ok && data.success) {
-                    btn.innerHTML = '✅ RE-RENDERING...';
-                    setTimeout(() => {
-                        closeSubsEditor();
-                        window.location.reload();
-                    }, 1000);
+                    btn.innerHTML = '⏳ RE-RENDERING SUBTITLES...';
+                    pollClipReRender(currentClipId);
                 } else {
                     throw new Error(data.error || 'Failed to save transcript');
                 }
@@ -1368,9 +1419,38 @@
             }
         }
 
+        function pollClipReRender(clipId) {
+            let attempts = 0;
+            const poll = setInterval(async () => {
+                attempts++;
+                try {
+                    const res = await fetch(`/clips/${clipId}/status`);
+                    if (res.ok) {
+                        const statusData = await res.json();
+                        if (String(statusData.status).toLowerCase() === 'ready') {
+                            clearInterval(poll);
+                            closeSubsEditor();
+                            showToast('✅ Subtitles re-rendered! Reloading...');
+                            setTimeout(() => window.location.reload(), 600);
+                            return;
+                        }
+                    }
+                } catch (e) {
+                    console.error("Clip status poll error:", e);
+                }
+                if (attempts > 90) {
+                    clearInterval(poll);
+                    window.location.reload();
+                }
+            }, 1200);
+        }
+
         // ─── 8. Background Polling for Active Video Streams ───
         const activeVideos = @json($videos->filter(fn($v) => !in_array(strtolower($v->status), ['completed', 'failed']))->pluck('id')->values());
         activeVideos.forEach(videoId => pollVideoStatus(videoId));
+
+        const renderingClips = @json($videos->flatMap->clips->filter(fn($c) => strtolower($c->status) === 'rendering')->pluck('id')->values());
+        renderingClips.forEach(clipId => pollClipReRender(clipId));
 
         function pollVideoStatus(videoId) {
             const interval = setInterval(async () => {

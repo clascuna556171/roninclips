@@ -3,10 +3,13 @@ import os
 import subprocess
 import json
 import re
+import threading
 import concurrent.futures
 from dotenv import load_dotenv
 from faster_whisper import WhisperModel
 from groq import Groq
+
+WHISPER_LOCK = threading.Lock()
 
 # Fix Windows encoding — prevent crash on emoji/unicode in print() AND subprocess pipes.
 if sys.platform == 'win32':
@@ -18,7 +21,7 @@ if sys.platform == 'win32':
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 # 1. Boot Environment & Context
-VIDEO_ID = sys.argv[1] if len(sys.argv) > 1 else None
+VIDEO_ID = sys.argv[1] if (__name__ == "__main__" and len(sys.argv) > 1) else None
 
 # Default settings
 DEFAULT_SETTINGS = {
@@ -43,7 +46,7 @@ DEFAULT_SETTINGS = {
     'split_screen': False,
 }
 
-if len(sys.argv) > 2 and sys.argv[2] != '--b64':
+if __name__ == "__main__" and len(sys.argv) > 2 and sys.argv[2] != '--b64':
     try:
         parsed = json.loads(sys.argv[2])
         for key, val in DEFAULT_SETTINGS.items():
@@ -71,6 +74,7 @@ from emoji_overlay import scan_transcript_for_emojis, generate_emoji_overlay_dat
 from audio_mixer import detect_speech_regions, mix_background_music
 from transitions import apply_whip_pan_transitions
 from split_screen import get_split_screen_filter
+from subtitles import generate_ass_subtitles, format_ass_time, ffmpeg_escape_path
 
 
 # ──────────────────────────────────────────────
@@ -81,8 +85,9 @@ def run_ffmpeg(cmd, **kwargs):
     """
     Run a subprocess command with UTF-8 encoding to avoid Windows cp1252 crashes.
     FFmpeg's stderr often contains non-ASCII bytes that crash cp1252 decoding.
+    Uses shell=False automatically when cmd is passed as a list of arguments.
     """
-    kwargs.setdefault('shell', True)
+    kwargs.setdefault('shell', isinstance(cmd, str))
     kwargs.setdefault('capture_output', True)
     kwargs.pop('text', None)
     return subprocess.run(cmd, encoding='utf-8', errors='replace', **kwargs)
@@ -91,7 +96,7 @@ def run_ffmpeg(cmd, **kwargs):
 def parse_time_to_seconds(time_val):
     """
     Convert a time value to float seconds.
-    Handles: HH:MM:SS strings, HH:MM:SS.ms strings, timedelta objects, and numeric values.
+    Handles: HH:MM:SS strings, MM:SS strings, HH:MM:SS.ms strings, timedelta objects, and numeric values.
     """
     import datetime
     if isinstance(time_val, (int, float)):
@@ -99,8 +104,13 @@ def parse_time_to_seconds(time_val):
     if isinstance(time_val, datetime.timedelta):
         return time_val.total_seconds()
     if isinstance(time_val, str):
-        parts = time_val.split(':')
-        return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+        cleaned = time_val.strip().rstrip('sS')
+        parts = cleaned.split(':')
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + float(parts[1])
+        return float(parts[0])
     return float(str(time_val).split(':')[0]) * 3600 if ':' in str(time_val) else float(time_val)
 
 
@@ -118,24 +128,6 @@ def format_seconds_ffmpeg(seconds):
     m = int((seconds % 3600) // 60)
     s = seconds % 60
     return f"{h:02d}:{m:02d}:{s:06.3f}"
-
-
-def format_ass_time(seconds):
-    """Convert seconds to ASS time format H:MM:SS.CC"""
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = seconds % 60
-    return f"{h}:{m:02d}:{s:05.2f}"
-
-
-def ffmpeg_escape_path(path):
-    """
-    Escape a file path for use inside FFmpeg filter strings (e.g., ass= or subtitles=).
-    Handles Windows drive letters, backslashes, and special characters.
-    """
-    p = path.replace('\\', '/')
-    p = p.replace(':', '\\:')
-    return p
 
 
 def parse_groq_json_response(raw_text):
@@ -180,152 +172,38 @@ def parse_groq_json_response(raw_text):
     raise ValueError(f"Could not locate a valid JSON array in model output. Response preview: {raw_text[:300]}...")
 
 
-def generate_ass_subtitles(words, output_path, output_w=1080, output_h=1920,
-                            style_preset='yellow_pop', font_family='Arial Black',
-                            position='bottom', layout_mode='two_line'):
+def split_transcript_into_chunks(transcript_text, max_chars=28000):
     """
-    Generate an ASS subtitle file with word-by-word highlighting.
+    Split a long transcript into newline-aligned chunks of at most max_chars
+    so multi-hour podcasts or streams can be analyzed across their full length.
     """
-    PALETTES = {
-        'yellow_pop': {
-            'active_color': '\\c&H00FFFF&',      # Yellow (RGB #FFFF00 -> BGR 00FFFF)
-            'inactive_color': '\\c&HFFFFFF&',    # White
-            'outline_size': 4,
-            'shadow_size': 2,
-        },
-        'neon_cyan': {
-            'active_color': '\\c&HFFFF00&',      # Cyan (RGB #00FFFF -> BGR FFFF00)
-            'inactive_color': '\\c&HEEEEEE&',    # Off-white
-            'outline_size': 4,
-            'shadow_size': 2,
-        },
-        'bold_white': {
-            'active_color': '\\c&H00FF00&',      # Neon Green (RGB #00FF00 -> BGR 00FF00)
-            'inactive_color': '\\c&HFFFFFF&',    # Pure White
-            'outline_size': 5,
-            'shadow_size': 3,
-        },
-        'hormozi_box': {
-            'active_color': '\\c&H00D7FF&',      # Gold / Warm Yellow (#FFD700 -> BGR 00D7FF)
-            'inactive_color': '\\c&HFFFFFF&',    # White
-            'outline_size': 6,
-            'shadow_size': 4,
-        },
-        'karaoke_green': {
-            'active_color': '\\c&H00FF66&',      # Neon Lime (#66FF00 -> BGR 00FF66)
-            'inactive_color': '\\c&HFFFFFF&',    # White
-            'outline_size': 5,
-            'shadow_size': 3,
-        },
-        'cyber_pink': {
-            'active_color': '\\c&HFF00FF&',      # Neon Magenta / Pink (#FF00FF -> BGR FF00FF)
-            'inactive_color': '\\c&H00FFFF&',    # Electric Yellow (#FFFF00 -> BGR 00FFFF)
-            'outline_size': 5,
-            'shadow_size': 3,
-        },
-        'fire_gold': {
-            'active_color': '\\c&H0045FF&',      # Fire Red-Orange (#FF4500 -> BGR 0045FF)
-            'inactive_color': '\\c&H00D7FF&',    # Warm Gold (#FFD700 -> BGR 00D7FF)
-            'outline_size': 6,
-            'shadow_size': 3,
-        },
-        'electric_violet': {
-            'active_color': '\\c&HF755A8&',      # Electric Violet (#A855F7 -> BGR F755A8)
-            'inactive_color': '\\c&HFFFFFF&',    # Crisp White
-            'outline_size': 5,
-            'shadow_size': 3,
-        },
-    }
-
-    style_cfg = PALETTES.get(style_preset, PALETTES['yellow_pop'])
-
-    if layout_mode == 'single_word':
-        chunk_size = 1
-        font_size = max(60, int(output_h / 18))
-    elif layout_mode == 'full_line':
-        chunk_size = 7
-        font_size = max(40, int(output_h / 28))
-    else:  # 'two_line' default
-        chunk_size = 4
-        font_size = max(48, int(output_h / 24))
-
-    pos = str(position).lower()
-    if pos == 'top':
-        alignment = 8
-        margin_v = int(output_h * 0.10)
-    elif pos == 'center':
-        alignment = 5
-        margin_v = 0
-    else:  # 'bottom' default
-        alignment = 2
-        margin_v = int(output_h * 0.14)
-
-    outline_val = style_cfg['outline_size']
-    shadow_val = style_cfg['shadow_size']
-    font_name = font_family.strip() if font_family else 'Arial Black'
-
-    ass_header = f"""[Script Info]
-ScriptType: v4.00+
-PlayResX: {output_w}
-PlayResY: {output_h}
-WrapStyle: 0
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{font_name},{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,{outline_val},{shadow_val},{alignment},20,20,{margin_v},1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
+    text = (transcript_text or "").strip()
+    if not text:
+        return []
+    if len(text) <= max_chars:
+        return [text]
 
     chunks = []
-    for i in range(0, len(words), chunk_size):
-        chunks.append(words[i:i + chunk_size])
+    current_lines = []
+    current_len = 0
 
-    events = []
-    for chunk in chunks:
-        chunk_end = chunk[-1]['end']
+    for line in text.splitlines():
+        line_len = len(line) + 1
+        if current_lines and current_len + line_len > max_chars:
+            chunks.append("\n".join(current_lines))
+            current_lines = [line]
+            current_len = line_len
+        else:
+            current_lines.append(line)
+            current_len += line_len
 
-        for i, current_word in enumerate(chunk):
-            event_start = current_word['start']
-            if i < len(chunk) - 1:
-                event_end = chunk[i + 1]['start']
-            else:
-                event_end = chunk_end
+    if current_lines:
+        chunks.append("\n".join(current_lines))
 
-            if event_end - event_start < 0.05:
-                event_end = event_start + 0.15
-
-            parts = []
-            for j, w in enumerate(chunk):
-                word_text = w['word'].strip().upper()
-                if not word_text:
-                    continue
-
-                line_prefix = "\\N " if (layout_mode == 'two_line' and j == 2) else ""
-
-                if j == i:
-                    active_tag = "{" + style_cfg['active_color'] + "\\fscx115\\fscy115}"
-                    reset_tag = "{" + style_cfg['inactive_color'] + "\\fscx100\\fscy100}"
-                    parts.append(line_prefix + active_tag + word_text + reset_tag)
-                else:
-                    parts.append(line_prefix + word_text)
-
-            text = " ".join(parts)
-            if text.strip():
-                start_str = format_ass_time(event_start)
-                end_str = format_ass_time(event_end)
-                events.append(f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{text}")
-
-    with open(output_path, 'w', encoding='utf-8-sig') as f:
-        f.write(ass_header)
-        f.write('\n'.join(events))
-        f.write('\n')
-
-    return len(events)
+    return chunks
 
 
-def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output_dir, temp_dir):
+def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output_dir, temp_dir, full_words=None):
     """
     Renders a single candidate video clip with all visual effects and audio processing.
     Can be executed concurrently in a worker thread.
@@ -361,21 +239,21 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
         intermediate_clip = os.path.join(temp_dir, f"intermediate_{clip_id}.mp4")
         print(f"  📦 [Clip #{clip_id}] Extracting intermediate clip...")
         
-        intermediate_result = run_ffmpeg(
-            f'ffmpeg -i "{video["storage_path"]}" -ss {clip_start_str} -t {clip_duration_str} '
-            f'-c:v libx264 -preset veryfast -crf 20 -c:a aac -b:a 128k '
-            f'-avoid_negative_ts make_zero -async 1 '
-            f'"{intermediate_clip}" -y'
-        )
+        intermediate_result = run_ffmpeg([
+            'ffmpeg', '-i', video['storage_path'], '-ss', clip_start_str, '-t', clip_duration_str,
+            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '128k',
+            '-avoid_negative_ts', 'make_zero', '-async', '1',
+            intermediate_clip, '-y'
+        ])
         if intermediate_result.returncode != 0 or not os.path.exists(intermediate_clip):
             # Fallback: try input seeking
             print(f"  ⚠️ [Clip #{clip_id}] Output seeking failed, trying input seeking fallback...")
-            run_ffmpeg(
-                f'ffmpeg -ss {clip_start_str} -to {clip_end_str} -i "{video["storage_path"]}" '
-                f'-c:v libx264 -preset veryfast -crf 20 -c:a aac -b:a 128k '
-                f'-avoid_negative_ts make_zero '
-                f'"{intermediate_clip}" -y'
-            )
+            run_ffmpeg([
+                'ffmpeg', '-ss', clip_start_str, '-to', clip_end_str, '-i', video['storage_path'],
+                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '128k',
+                '-avoid_negative_ts', 'make_zero',
+                intermediate_clip, '-y'
+            ])
 
         if not os.path.exists(intermediate_clip):
             print(f"  ❌ [Clip #{clip_id}] Failed to extract intermediate clip, skipping")
@@ -388,10 +266,10 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
 
         # ─── Step A.2: Extract audio from intermediate for transcription ───
         clip_audio = os.path.join(temp_dir, f"clip_audio_{clip_id}.mp3")
-        run_ffmpeg(
-            f'ffmpeg -i "{intermediate_clip}" '
-            f'-b:a 64k -ac 1 -ar 16000 "{clip_audio}" -y'
-        )
+        run_ffmpeg([
+            'ffmpeg', '-i', intermediate_clip,
+            '-b:a', '64k', '-ac', '1', '-ar', '16000', clip_audio, '-y'
+        ])
 
         # ─── Step B: Split-Screen OR Smart Crop ───
         crop_filter = None
@@ -404,8 +282,8 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
             print(f"  👥 [Clip #{clip_id}] Detecting speakers for split-screen...")
             try:
                 split_fc, split_w, split_h = get_split_screen_filter(
-                    video['storage_path'],
-                    start_time=clip_start,
+                    intermediate_clip,
+                    start_time=0.0,
                     duration=clip_duration,
                     output_w=1080, output_h=1920
                 )
@@ -424,8 +302,8 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
             print(f"  🎯 [Clip #{clip_id}] Running face detection for smart crop...")
             try:
                 crop_filter, crop_w, crop_h = get_smart_crop_filter(
-                    video['storage_path'],
-                    start_time=clip_start,
+                    intermediate_clip,
+                    start_time=0.0,
                     duration=clip_duration,
                     sample_every_n=5,
                     output_ratio=(9, 16),
@@ -499,38 +377,56 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
         # ─── Step E: Transcribe clip for word-level captions ───
         all_words = []
         ass_path = None
-        if SETTINGS['auto_captions'] and os.path.exists(clip_audio):
-            whisper_task = 'translate' if SETTINGS.get('language_mode') == 'translate_en' else 'transcribe'
-            print(f"  📝 [Clip #{clip_id}] Transcribing clip with word-level timestamps (task={whisper_task})...")
-            try:
-                clip_segments, _ = whisper_model.transcribe(
-                    clip_audio, beam_size=5, word_timestamps=True, task=whisper_task
-                )
-                for seg in clip_segments:
-                    if seg.words:
-                        for w in seg.words:
-                            all_words.append({
-                                'word': w.word.strip(),
-                                'start': w.start,
-                                'end': w.end,
-                            })
-            except Exception as clip_w_err:
-                print(f"  ⚠️ [Clip #{clip_id}] Whisper transcription error ({clip_w_err}), attempting CPU fallback...")
+        if SETTINGS['auto_captions']:
+            if full_words:
+                for w in full_words:
+                    if w['end'] > clip_start and w['start'] < clip_end:
+                        rebased_start = round(max(0.0, w['start'] - clip_start), 3)
+                        rebased_end = round(min(clip_duration, max(rebased_start + 0.05, w['end'] - clip_start)), 3)
+                        all_words.append({
+                            'word': w['word'].strip(),
+                            'start': rebased_start,
+                            'end': rebased_end,
+                        })
+                if all_words:
+                    print(f"  ⚡ [Clip #{clip_id}] Sliced {len(all_words)} cached word timestamps from master transcript.")
+
+            if not all_words and os.path.exists(clip_audio):
+                whisper_tier = SETTINGS.get('whisper_model', 'small').lower().strip()
+                if whisper_tier not in ('tiny', 'base', 'small', 'medium', 'large-v3'):
+                    whisper_tier = 'small'
+                whisper_task = 'translate' if SETTINGS.get('language_mode') == 'translate_en' else 'transcribe'
+                print(f"  📝 [Clip #{clip_id}] Transcribing clip with word-level timestamps (task={whisper_task})...")
                 try:
-                    cpu_model = WhisperModel(whisper_tier, device='cpu', compute_type='int8')
-                    clip_segments, _ = cpu_model.transcribe(
-                        clip_audio, beam_size=5, word_timestamps=True, task=whisper_task
-                    )
-                    for seg in clip_segments:
-                        if seg.words:
-                            for w in seg.words:
-                                all_words.append({
-                                    'word': w.word.strip(),
-                                    'start': w.start,
-                                    'end': w.end,
-                                })
-                except Exception as cpu_err:
-                    print(f"  ⚠️ [Clip #{clip_id}] Subtitle generation skipped: {cpu_err}")
+                    with WHISPER_LOCK:
+                        clip_segments, _ = whisper_model.transcribe(
+                            clip_audio, beam_size=5, word_timestamps=True, task=whisper_task
+                        )
+                        for seg in clip_segments:
+                            if seg.words:
+                                for w in seg.words:
+                                    all_words.append({
+                                        'word': w.word.strip(),
+                                        'start': w.start,
+                                        'end': w.end,
+                                    })
+                except Exception as clip_w_err:
+                    print(f"  ⚠️ [Clip #{clip_id}] Whisper transcription error ({clip_w_err}), attempting CPU fallback...")
+                    try:
+                        cpu_model = WhisperModel(whisper_tier, device='cpu', compute_type='int8')
+                        clip_segments, _ = cpu_model.transcribe(
+                            clip_audio, beam_size=5, word_timestamps=True, task=whisper_task
+                        )
+                        for seg in clip_segments:
+                            if seg.words:
+                                for w in seg.words:
+                                    all_words.append({
+                                        'word': w.word.strip(),
+                                        'start': w.start,
+                                        'end': w.end,
+                                    })
+                    except Exception as cpu_err:
+                        print(f"  ⚠️ [Clip #{clip_id}] Subtitle generation skipped: {cpu_err}")
 
             print(f"  [Clip #{clip_id}] Found {len(all_words)} words for captions.")
 
@@ -715,6 +611,7 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
 
         crop_data = {
             'crop_filter': crop_filter,
+            'zoom_filter': zoom_filter,
             'use_split_screen': use_split_screen,
             'split_filter_complex': split_filter_complex if use_split_screen else None,
             'render_w': render_w,
@@ -796,9 +693,9 @@ def run_pipeline():
         os.makedirs(os.path.dirname(audio_path), exist_ok=True)
 
         print(f"\nExtracting audio from: {video['storage_path']}")
-        result = run_ffmpeg(
-            f'ffmpeg -i "{video["storage_path"]}" -b:a 64k -ac 1 -ar 16000 -map a "{audio_path}" -y'
-        )
+        result = run_ffmpeg([
+            'ffmpeg', '-i', video['storage_path'], '-b:a', '64k', '-ac', '1', '-ar', '16000', '-map', 'a', audio_path, '-y'
+        ])
         if not os.path.exists(audio_path):
             raise Exception(f"FFmpeg failed to extract audio. stderr: {result.stderr[-500:]}")
 
@@ -822,20 +719,36 @@ def run_pipeline():
             print(f"  ⚠️ Whisper GPU initialization failed ({w_init_err}), falling back to CPU (int8)...")
             whisper_model = WhisperModel(whisper_tier, device='cpu', compute_type='int8')
 
+        full_words = []
         try:
-            segments_iter, info = whisper_model.transcribe(audio_path, beam_size=5, task=whisper_task)
+            segments_iter, info = whisper_model.transcribe(audio_path, beam_size=5, word_timestamps=True, task=whisper_task)
             transcript_text = ""
             for segment in segments_iter:
                 transcript_text += f"[{format_time(segment.start)} - {format_time(segment.end)}] {segment.text.strip()}\n"
+                if segment.words:
+                    for w in segment.words:
+                        full_words.append({
+                            'word': w.word.strip(),
+                            'start': w.start,
+                            'end': w.end,
+                        })
             print(f"Detected language: {info.language} (probability: {info.language_probability:.2f})")
         except Exception as w_trans_err:
             if ('cublas' in str(w_trans_err).lower() or 'cuda' in str(w_trans_err).lower()) and whisper_cfg.get('device') == 'cuda':
                 print(f"  ⚠️ Whisper CUDA execution failed ({w_trans_err}), falling back to CPU (int8)...")
                 whisper_model = WhisperModel(whisper_tier, device='cpu', compute_type='int8')
-                segments_iter, info = whisper_model.transcribe(audio_path, beam_size=5, task=whisper_task)
+                segments_iter, info = whisper_model.transcribe(audio_path, beam_size=5, word_timestamps=True, task=whisper_task)
                 transcript_text = ""
+                full_words = []
                 for segment in segments_iter:
                     transcript_text += f"[{format_time(segment.start)} - {format_time(segment.end)}] {segment.text.strip()}\n"
+                    if segment.words:
+                        for w in segment.words:
+                            full_words.append({
+                                'word': w.word.strip(),
+                                'start': w.start,
+                                'end': w.end,
+                            })
                 print(f"Detected language: {info.language} (probability: {info.language_probability:.2f})")
             else:
                 raise w_trans_err
@@ -858,9 +771,10 @@ def run_pipeline():
 
         if SETTINGS.get('full_video_mode', False):
             print("\n🎬 FULL VIDEO MODE — Skipping AI clip extraction.")
-            duration_result = run_ffmpeg(
-                f'ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "{video["storage_path"]}"'
-            )
+            duration_result = run_ffmpeg([
+                'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                '-of', 'default=noprint_wrappers=1:nokey=1', video['storage_path']
+            ])
             try:
                 total_seconds = float(duration_result.stdout.strip())
             except Exception:
@@ -888,31 +802,9 @@ def run_pipeline():
             print(f"   Inserted 1 full-video clip entry.")
         else:
             print("\nAnalyzing transcript with Groq LLM (Virality Scoring & Social Kit)...")
-            clip_count = SETTINGS.get('target_clip_count', 3)
-            prompt = f"""Analyze the following video transcript. Find up to {clip_count} highly engaging, self-contained clips suitable for short-form viral video (TikTok / Instagram Reels / YouTube Shorts).
-Each clip must be between 30 and 60 seconds long.
-Use the timestamps from the transcript to determine start and end times.
-For each clip, calculate a realistic Virality Score (1-100) with sub-scores, a high-CTR title, engaging social caption with emojis, trending hashtags, and YouTube Shorts description.
-
-Return your answer STRICTLY in JSON format matching this structure without any markdown wrappers or surrounding text:
-[
-  {{
-    "start": "00:01:15",
-    "end": "00:02:00",
-    "title": "Short Punchy High-CTR Title",
-    "virality_score": 94,
-    "hook_strength": 96,
-    "pacing_energy": 90,
-    "shareability": 95,
-    "reason": "Why this segment has high viral retention and psychological engagement",
-    "social_caption": "Most people get this completely wrong... 😳 Watch until the end to see why. 🔥",
-    "hashtags": "#viral #podcast #trending #fyp #mindset",
-    "shorts_description": "Search-optimized YouTube Shorts description..."
-  }}
-]
-
-Transcript:
-{transcript_text[:8000]}"""
+            clip_count = int(SETTINGS.get('target_clip_count', 3))
+            chunks = split_transcript_into_chunks(transcript_text, max_chars=28000)
+            per_chunk_count = max(2, clip_count) if len(chunks) > 1 else clip_count
 
             # Dynamically query active Groq models with preferred fallback order
             preferred_order = [
@@ -950,36 +842,81 @@ Transcript:
                     if pref not in groq_models:
                         groq_models.append(pref)
 
-            raw_response = None
+            all_candidates = []
             last_error = None
-            for model_name in groq_models:
-                try:
-                    print(f"  Trying model: {model_name}...")
-                    chat_completion = client.chat.completions.create(
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": "You are an elite short-form video editor and viral strategist AI. You analyze transcripts, find the most viral moments, score them with precision, and generate high-converting social media copy. Always respond with valid JSON only, no markdown."
-                            },
-                            {
-                                "role": "user",
-                                "content": prompt,
-                            }
-                        ],
-                        model=model_name,
-                        temperature=0.3,
-                    )
-                    raw_response = chat_completion.choices[0].message.content
-                    print(f"  Success with model: {model_name}")
-                    break
-                except Exception as model_err:
-                    last_error = model_err
-                    continue
 
-            if raw_response is None:
-                raise Exception(f"All Groq models failed. Last error: {last_error}.")
+            for c_idx, chunk_text in enumerate(chunks):
+                if len(chunks) > 1:
+                    print(f"  📑 Analyzing transcript chunk {c_idx + 1}/{len(chunks)} ({len(chunk_text)} chars)...")
 
-            clips = parse_groq_json_response(raw_response)
+                prompt = f"""Analyze the following video transcript segment. Find up to {per_chunk_count} highly engaging, self-contained clips suitable for short-form viral video (TikTok / Instagram Reels / YouTube Shorts).
+Each clip must be between 30 and 60 seconds long.
+Use the timestamps from the transcript to determine start and end times.
+For each clip, calculate a realistic Virality Score (1-100) with sub-scores, a high-CTR title, engaging social caption with emojis, trending hashtags, and YouTube Shorts description.
+
+Return your answer STRICTLY in JSON format matching this structure without any markdown wrappers or surrounding text:
+[
+  {{
+    "start": "00:01:15",
+    "end": "00:02:00",
+    "title": "Short Punchy High-CTR Title",
+    "virality_score": 94,
+    "hook_strength": 96,
+    "pacing_energy": 90,
+    "shareability": 95,
+    "reason": "Why this segment has high viral retention and psychological engagement",
+    "social_caption": "Most people get this completely wrong... 😳 Watch until the end to see why. 🔥",
+    "hashtags": "#viral #podcast #trending #fyp #mindset",
+    "shorts_description": "Search-optimized YouTube Shorts description..."
+  }}
+]
+
+Transcript:
+{chunk_text}"""
+
+                raw_response = None
+                for model_name in groq_models:
+                    try:
+                        print(f"  Trying model: {model_name}...")
+                        chat_completion = client.chat.completions.create(
+                            messages=[
+                                {
+                                    "role": "system",
+                                    "content": "You are an elite short-form video editor and viral strategist AI. You analyze transcripts, find the most viral moments, score them with precision, and generate high-converting social media copy. Always respond with valid JSON only, no markdown."
+                                },
+                                {
+                                    "role": "user",
+                                    "content": prompt,
+                                }
+                            ],
+                            model=model_name,
+                            temperature=0.3,
+                        )
+                        raw_response = chat_completion.choices[0].message.content
+                        print(f"  Success with model: {model_name}")
+                        break
+                    except Exception as model_err:
+                        last_error = model_err
+                        continue
+
+                if raw_response is not None:
+                    try:
+                        chunk_clips = parse_groq_json_response(raw_response)
+                        all_candidates.extend(chunk_clips)
+                    except Exception as parse_err:
+                        last_error = parse_err
+                        print(f"  ⚠️ Chunk {c_idx + 1} JSON parse warning: {parse_err}")
+
+            if not all_candidates:
+                raise Exception(f"All Groq models failed or returned no valid clips. Last error: {last_error}.")
+
+            # Rank across chunks by virality_score descending and cap to target_clip_count
+            if len(chunks) > 1 and len(all_candidates) > clip_count:
+                all_candidates.sort(key=lambda c: int(c.get('virality_score', 80)), reverse=True)
+                clips = all_candidates[:clip_count]
+                clips.sort(key=lambda c: parse_time_to_seconds(c.get('start', '00:00:00')))
+            else:
+                clips = all_candidates[:clip_count]
 
             print(f"Found {len(clips)} viral hook candidates with scoring & social kits.")
 
@@ -1021,12 +958,12 @@ Transcript:
             print("⚡ Enabling Parallel Multi-Clip Rendering (2 concurrent workers)...")
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                 futures = [
-                    executor.submit(render_single_clip, sc, video, SETTINGS, whisper_model, encoder_flags, output_dir, temp_dir)
+                    executor.submit(render_single_clip, sc, video, SETTINGS, whisper_model, encoder_flags, output_dir, temp_dir, full_words)
                     for sc in saved_clips
                 ]
                 concurrent.futures.wait(futures)
         elif len(saved_clips) == 1:
-            render_single_clip(saved_clips[0], video, SETTINGS, whisper_model, encoder_flags, output_dir, temp_dir)
+            render_single_clip(saved_clips[0], video, SETTINGS, whisper_model, encoder_flags, output_dir, temp_dir, full_words)
 
         cursor.execute("UPDATE long_videos SET status = 'completed' WHERE id = %s", (VIDEO_ID,))
         db.commit()

@@ -27,8 +27,9 @@ Write-Host "`n[3/4] Installing PHP & Python dependencies..." -ForegroundColor Ye
 composer install --no-interaction
 pip install -r processor/requirements.txt
 
-Write-Host "`n[4/4] Running database setup..." -ForegroundColor Yellow
+Write-Host "`n[4/4] Running database setup and linking storage..." -ForegroundColor Yellow
 php artisan migrate --force
+php artisan storage:link
 
 Write-Host "`n========================================================" -ForegroundColor Green
 Write-Host "   [SUCCESS] RoninClips Installed Successfully!" -ForegroundColor Green

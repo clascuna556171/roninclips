@@ -73,8 +73,9 @@ if exist processor\.venv\Scripts\pip.exe (
 )
 
 echo.
-echo [4/4] Running database migrations...
+echo [4/4] Running database migrations and linking public storage...
 call php artisan migrate --force
+call php artisan storage:link
 
 echo.
 echo ========================================================

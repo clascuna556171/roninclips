@@ -199,13 +199,6 @@ button, input, select, textarea, pre, code {
   color: #ff9f0a;
   background: rgba(255, 159, 10, 0.08);
 }
-  padding: 28px 32px;
-  background: var(--color-bg);
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 28px;
-}
 
 /* ─── Hero TUI Mockup & ASCII Header ─── */
 .hero-tui-mockup {
@@ -486,6 +479,17 @@ button, input, select, textarea, pre, code {
 .toggle-checkbox:checked + .toggle-status {
   background: var(--color-accent);
   border-color: var(--color-accent);
+}
+
+.toggle-checkbox:focus-visible + .toggle-status,
+.settings-header:focus-visible,
+.folder-header:focus-visible,
+.preset-card-btn:focus-visible,
+.btn-input-action:focus-visible,
+.button-primary:focus-visible,
+.button-danger-sm:focus-visible {
+  outline: 2px solid var(--color-cyan);
+  outline-offset: 2px;
 }
 
 .toggle-checkbox:checked + .toggle-status::after {

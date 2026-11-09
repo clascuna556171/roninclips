@@ -1,4 +1,3 @@
-google-genai
 mysql-connector-python
 opencv-python
 mediapipe
