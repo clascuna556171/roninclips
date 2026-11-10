@@ -94,6 +94,12 @@ class TestProcessorPipeline(unittest.TestCase):
         self.assertEqual(parse_time_to_seconds("01:02:03"), 3723.0)
         self.assertEqual(parse_time_to_seconds("15.5s"), 15.5)
 
+    def test_re_render_clip_run_ffmpeg_defaults(self):
+        from re_render_clip import run_ffmpeg
+        res = run_ffmpeg([sys.executable, '-c', 'print("roninclips_test")'])
+        self.assertEqual(res.returncode, 0)
+        self.assertIn('roninclips_test', res.stdout.strip())
+
 
 if __name__ == "__main__":
     unittest.main()

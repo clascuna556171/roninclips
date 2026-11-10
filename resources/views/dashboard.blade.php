@@ -5,6 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>RoninClips — Local AI Video Clipper</title>
     <link rel="stylesheet" href="{{ asset('css/app.css') }}?v={{ file_exists(public_path('css/app.css')) ? filemtime(public_path('css/app.css')) : 1 }}">
+    <!-- Non-blocking Google Fonts prefetch (renders immediately offline with local fallback) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin>
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300..800;1,400..700&display=swap" media="print" onload="this.media='all'">
+    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300..800;1,400..700&display=swap"></noscript>
     <!-- Local Lucide Icons Bundle (100% Offline Ready) -->
     <script src="{{ asset('js/lucide.min.js') }}"></script>
 </head>

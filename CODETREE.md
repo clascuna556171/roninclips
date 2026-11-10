@@ -135,23 +135,26 @@ roninclips/
 │   ├── requirements.txt                   # Python dependencies (faster-whisper, mediapipe, groq, etc.)
 │   ├── db_helper.py                       # Unified Dual-DB connector (transparent SQLite & MySQL support)
 │   ├── hw_accel.py                        # Hardware acceleration probe (CUDA Faster-Whisper & NVENC/QSV/AMF)
-│   ├── engine.py                          # Master processing orchestrator (Parallel Whisper + Groq + FFmpeg pipeline)
+│   ├── engine.py                          # Master processing orchestrator (Single-pass Whisper + Groq + FFmpeg pipeline)
+│   ├── subtitles.py                       # Shared ASS subtitle generator, palette presets & path escaping
 │   ├── face_tracker.py                    # MediaPipe face tracking & 9:16 smart cropping generator
 │   ├── audio_mixer.py                     # RMS speech detection & dynamic background music ducking
 │   ├── effects.py                         # Audio volume spike detection, punch-in zoom & Ken Burns FX
 │   ├── emoji_overlay.py                   # Transcript keyword scanner & PIL/FFmpeg animated emoji overlays
 │   ├── transitions.py                     # Scene change detector & FFmpeg whip-pan transition generator
 │   ├── split_screen.py                    # Two-speaker podcast layout detector & split-screen compositor
-│   ├── re_render_clip.py                  # Standalone transcript subtitle re-render executor
+│   ├── re_render_clip.py                  # Standalone transcript subtitle & BGM re-render executor
 │   └── models/
 │       └── blaze_face_short_range.tflite  # MediaPipe BlazeFace short range detection model weights
 │
 ├── 📁 tests/                              # Application Test Suite
 │   ├── TestCase.php                       # Base PHPUnit test case
 │   ├── Pest.php                           # Pest PHP testing setup
-│   ├── Feature/                           # Feature integration tests
+│   ├── Feature/                           # Feature integration tests (Pest suite)
+│   │   └── ExampleTest.php                # Dashboard, retry, logs, status, validation & cleanup tests
 │   ├── Unit/                              # Unit tests
-│   └── scratch/                           # Diagnostic & maintenance test scripts (git-ignored)
+│   └── python/                            # Python unit test suite
+│       └── test_processor.py              # ASS formatting, filters, Groq parsing & timestamps tests
 │
 ├── 📁 public/                             # Public Web Assets & HTTP Entry Point
 │   ├── .htaccess                          # Apache URL rewrite configurations
@@ -159,6 +162,8 @@ roninclips/
 │   ├── robots.txt                         # Web crawler instructions
 │   ├── favicon.ico                        # App favicon
 │   ├── storage                            # Symlink to storage/app/public for media serving
+│   ├── js/
+│   │   └── lucide.min.js                  # Bundled Lucide icons for 100% offline air-gapped readiness
 │   └── css/
 │       └── app.css                        # Complete custom stylesheet (Berkeley Mono / OpenCode dark theme)
 │
@@ -181,26 +186,21 @@ roninclips/
 │   ├── framework/                         # Laravel view caches, sessions, and compile cache
 │   └── logs/                              # Engine execution logs (engine_{video_id}.log)
 │
-└── 📁 tests/                              # Application Test Suite
-    ├── TestCase.php                       # Base PHPUnit test case
-    ├── Pest.php                           # Pest PHP testing setup
-    ├── Feature/                           # Feature integration tests
-    └── Unit/                              # Unit tests
 ```
 
 ---
 
 ## 🔍 Component & Subsystem Breakdown
 
-### 1. Frontend & Dashboard Orchestration (Laravel 12)
+### 1. Frontend & Dashboard Orchestration (Laravel 12/13)
 
 | File | Type | Primary Role & Description |
 | :--- | :--- | :--- |
-| [`routes/web.php`](file:///c:/Users/Sebaz/roninclips/routes/web.php) | Route Config | Declares web endpoints: `GET /` (Dashboard), `POST /videos` (Process video), `GET /videos/{id}/logs` (Live log polling), `DELETE /videos/{video}` (Delete video & clips), `DELETE /clips/{clip}` (Delete single clip), `POST /clips/{clip}/explorer` (Reveal file in Windows Explorer), `GET /clips/{clip}/transcript` (Get word JSON), `POST /clips/{clip}/re-render` (Re-render clip with edited words). |
-| [`app/Http/Controllers/VideoController.php`](file:///c:/Users/Sebaz/roninclips/app/Http/Controllers/VideoController.php) | PHP Controller | Handles video path validation, parsing of 16 strategy settings, database record creation, and detached background process execution (`pclose(popen('start /B cmd /c ...'))` on Windows). Streams engine logs and orchestrates transcript re-rendering. |
-| [`app/Models/LongVideo.php`](file:///c:/Users/Sebaz/roninclips/app/Models/LongVideo.php) | Eloquent Model | Represents uploaded source videos in `long_videos` table. Automatically casts `processing_settings` to array and defines `clips()` 1:N relationship. |
-| [`resources/views/dashboard.blade.php`](file:///c:/Users/Sebaz/roninclips/resources/views/dashboard.blade.php) | Blade Template | Studio-grade Two-Column Creator Workspace featuring: (1) Top System HUD with live GPU CUDA, Groq LLM model, database driver, and active job indicators, (2) Sticky Left Sidebar with Ingestion dropzone, Native Windows File Picker, Strategy Presets, and Collapsible Settings with live Subtitle Preview Simulator, (3) Right Main Canvas with multi-step live progress tracking, console logs, and Master Clip Gallery, (4) Hover-to-Play Video Scrubbing with 1-click Download & Copy Post actions, (5) Cinema Lightbox Modal with Safe-Zone overlays (TikTok, Reels, Shorts) and Social Media Posting Kit. |
-| [`public/css/app.css`](file:///c:/Users/Sebaz/roninclips/public/css/app.css) | Vanilla CSS | Studio Glassmorphic Dark theme design system (Inter + JetBrains Mono). Features low-glare obsidian glass cards (`backdrop-filter: blur(16px)`), responsive two-column grid (`.studio-workspace`), custom animated metric bars, safe-zone bounding boxes, and toast notifications. |
+| [`routes/web.php`](routes/web.php) | Route Config | Declares web endpoints: `GET /` (Dashboard), `POST /videos` (Process video), `POST /videos/{video}/retry` (1-click job retry), `GET /videos/{id}/logs` (Live log polling), `DELETE /videos/{video}` (Delete video & clips), `DELETE /clips/{clip}` (Delete single clip), `POST /clips/{clip}/explorer` (Reveal file in Windows Explorer), `GET /clips/{clip}/transcript` (Get word JSON), `GET /clips/{clip}/status` (Status polling), `POST /clips/{clip}/re-render` (Re-render clip with edited words). |
+| [`app/Http/Controllers/VideoController.php`](app/Http/Controllers/VideoController.php) | PHP Controller | Handles video path validation, parsing of 16 strategy settings, database record creation, and detached background process execution (`pclose(popen('start /B cmd /c ...'))` on Windows). Streams engine logs, manages artifact cleanup (`cleanupClipFiles`), and orchestrates transcript re-rendering. |
+| [`app/Models/LongVideo.php`](app/Models/LongVideo.php) | Eloquent Model | Represents uploaded source videos in `long_videos` table. Automatically casts `processing_settings` to array and defines `clips()` 1:N relationship. |
+| [`resources/views/dashboard.blade.php`](resources/views/dashboard.blade.php) | Blade Template | Studio-grade Two-Column Creator Workspace featuring: (1) Top System HUD with live GPU CUDA/CPU badge, Groq LLM model, database driver, and active job indicators, (2) Sticky Left Sidebar with Ingestion dropzone, Native Windows File Picker, Strategy Presets, and Collapsible Settings with live Subtitle Preview Simulator, (3) Right Main Canvas with multi-step live progress tracking, console logs, and Master Clip Gallery, (4) Hover-to-Play Video Scrubbing with 1-click Download & Copy Post actions, (5) Cinema Lightbox Modal with Safe-Zone overlays (TikTok, Reels, Shorts) and Social Media Posting Kit. |
+| [`public/css/app.css`](public/css/app.css) | Vanilla CSS | Studio Glassmorphic Dark theme design system (Berkeley Mono / OpenCode dark palette) with zero-latency local offline font fallbacks (`JetBrains Mono`, `Cascadia Code`, `Fira Code`, `Consolas`). Features low-glare obsidian glass cards, responsive two-column grid (`.studio-workspace`), custom animated metric bars, safe-zone bounding boxes, and toast notifications. |
 
 ---
 
@@ -208,31 +208,32 @@ roninclips/
 
 | File | Module | Key Functions & Logic |
 | :--- | :--- | :--- |
-| [`processor/engine.py`](file:///c:/Users/Sebaz/roninclips/processor/engine.py) | **Pipeline Orchestrator** | Coordinates the entire clipping lifecycle: <br>• Ingests `VIDEO_ID` and settings from MySQL.<br>• Extracts audio with FFmpeg.<br>• Runs local Speech-to-Text via `faster-whisper` (`WhisperModel("small")`).<br>• Prompts Groq LLMs (`llama-3.3-70b-versatile`, fallback to 5 other models) to detect 30–60s viral hooks.<br>• Extracts **frame-accurate intermediate clips** (`-ss after -i`, `-avoid_negative_ts make_zero`, `-async 1`) to eliminate audio/subtitle desync.<br>• Integrates smart crop, zoom FX, emojis, transitions, BGM, and generates word-by-word highlighted ASS subtitles. |
-| [`processor/face_tracker.py`](file:///c:/Users/Sebaz/roninclips/processor/face_tracker.py) | **Smart Crop & Tracking** | Uses MediaPipe Tasks API (BlazeFace Short Range `.tflite`) to detect faces across sampled frames. Calculates bounding box centers, applies exponential smoothing (`alpha=0.08`), clamps to video bounds, and generates dynamic or simple 9:16 FFmpeg `crop=w:h:x:y` filters. |
-| [`processor/split_screen.py`](file:///c:/Users/Sebaz/roninclips/processor/split_screen.py) | **Podcast Split-Screen** | Analyzes face positions across video frames to identify two primary speakers (Left Zone and Right Zone). Generates dual-crop FFmpeg filter complex that stacks the two speakers into a vertical 9:16 top/bottom composition. |
-| [`processor/audio_mixer.py`](file:///c:/Users/Sebaz/roninclips/processor/audio_mixer.py) | **BGM & Auto-Ducking** | Analyzes speech regions via audio RMS energy calculation. Generates dynamic volume envelopes (`volume='if(between(t,...), 0.12, 0.40)':eval=frame`) to duck background music during dialogue and boost music during pauses. |
-| [`processor/effects.py`](file:///c:/Users/Sebaz/roninclips/processor/effects.py) | **Motion FX & Punch-In** | Detects audio volume spikes (moments of vocal excitement/climax) using sliding RMS energy windows. Generates scale-and-crop zoom filters (1.15x punch-in) or Ken Burns slow zoom (1.0x to 1.05x). Avoids buggy `zoompan` filter to preserve full framerate. |
-| [`processor/emoji_overlay.py`](file:///c:/Users/Sebaz/roninclips/processor/emoji_overlay.py) | **Animated Emojis** | Scans transcript words against an extensive keyword dictionary (e.g. fire, money, shock, brain, danger). Renders high-res emoji PNGs via Pillow and creates timed FFmpeg overlay filter complex commands with subtle scale/pop animations. |
-| [`processor/transitions.py`](file:///c:/Users/Sebaz/roninclips/processor/transitions.py) | **Whip-Pan Transitions** | Detects scene changes using FFmpeg scene score filter (`select='gt(scene,0.3)'`). Splits clips into segments and applies multi-directional directional blur / whip-pan transition effects at cut points. |
-| [`processor/re_render_clip.py`](file:///c:/Users/Sebaz/roninclips/processor/re_render_clip.py) | **Transcript Editor Re-renderer** | Invoked when a user edits words or timestamps in the dashboard transcript editor. Reads updated `clip_{id}_words.json`, generates fresh `.ass` subtitles, and burns them onto the intermediate clip in seconds without re-running transcription or AI analysis. |
-| [`processor/requirements.txt`](file:///c:/Users/Sebaz/roninclips/processor/requirements.txt) | Dependencies | Core Python dependencies: `google-genai`, `mysql-connector-python`, `opencv-python`, `mediapipe`, `python-dotenv`, `numpy`, `faster-whisper`, `groq`, `Pillow`. |
+| [`processor/engine.py`](processor/engine.py) | **Pipeline Orchestrator** | Coordinates the entire clipping lifecycle: <br>• Ingests `VIDEO_ID` and settings via `db_helper.py`.<br>• Extracts audio with FFmpeg.<br>• Runs single-pass local Speech-to-Text via `faster-whisper` (`WhisperModel`, `word_timestamps=True`) and slices word timings per clip.<br>• Prompts Groq LLMs (`openai/gpt-oss-120b`, `llama-3.3-70b-versatile`) across multi-chunk 28k-char windows to detect 30–60s viral hooks.<br>• Extracts **frame-accurate intermediate clips** (`-ss after -i`, `-avoid_negative_ts make_zero`, `-async 1`) to eliminate audio/subtitle desync.<br>• Integrates smart crop, zoom FX, emojis, transitions, BGM auto-ducking, and generates word-by-word highlighted ASS subtitles. |
+| [`processor/subtitles.py`](processor/subtitles.py) | **ASS Subtitle Generator** | Shared module defining 8 high-contrast color palettes, millisecond time formatting (`format_ass_time`), FFmpeg path escaping (`ffmpeg_escape_path`), and ASS tag/comma sanitization. Consumed by both `engine.py` and `re_render_clip.py`. |
+| [`processor/face_tracker.py`](processor/face_tracker.py) | **Smart Crop & Tracking** | Uses MediaPipe Tasks API (BlazeFace Short Range `.tflite`) to detect faces across sampled frames on intermediate clips. Calculates bounding box centers, applies exponential smoothing (`alpha=0.08`), clamps to video bounds, and generates dynamic or simple 9:16 FFmpeg `crop=w:h:x:y` filters. |
+| [`processor/split_screen.py`](processor/split_screen.py) | **Podcast Split-Screen** | Analyzes face positions across video frames to identify two primary speakers (Left Zone and Right Zone). Generates dual-crop FFmpeg filter complex that stacks the two speakers into a vertical 9:16 top/bottom composition. |
+| [`processor/audio_mixer.py`](processor/audio_mixer.py) | **BGM & Auto-Ducking** | Analyzes speech regions via audio RMS energy calculation using concurrency-safe UUID temp files. Generates dynamic volume envelopes (`volume='if(between(t,...), 0.12, 0.40)':eval=frame`) to duck background music during dialogue and boost music during pauses. |
+| [`processor/effects.py`](processor/effects.py) | **Motion FX & Punch-In** | Detects audio volume spikes (moments of vocal excitement/climax) using sliding RMS energy windows. Generates scale-and-crop zoom filters (1.15x punch-in) or Ken Burns slow zoom (1.0x to 1.05x). Avoids buggy `zoompan` filter to preserve full framerate. |
+| [`processor/emoji_overlay.py`](processor/emoji_overlay.py) | **Animated Emojis** | Scans transcript words against an extensive keyword dictionary (e.g. fire, money, shock, brain, danger). Renders high-res emoji PNGs via Pillow and creates timed FFmpeg overlay filter complex commands with subtle scale/pop animations. |
+| [`processor/transitions.py`](processor/transitions.py) | **Whip-Pan Transitions** | Detects scene changes using FFmpeg scene score filter (`select='gt(scene,0.3)'`). Splits clips into segments and applies multi-directional directional blur / whip-pan transition effects at cut points. |
+| [`processor/re_render_clip.py`](processor/re_render_clip.py) | **Transcript Editor Re-renderer** | Invoked when a user edits words or timestamps in the dashboard transcript editor. Reads updated `clip_{id}_words.json`, generates fresh `.ass` subtitles, burns them onto the intermediate clip, and re-mixes BGM in seconds without re-running transcription or AI analysis. |
+| [`processor/requirements.txt`](processor/requirements.txt) | Dependencies | Core Python dependencies: `faster-whisper`, `groq`, `mediapipe`, `opencv-python`, `Pillow`, `numpy`, `python-dotenv`, `mysql-connector-python`. |
 
 ---
 
-### 3. Database Layer (MySQL)
+### 3. Database Layer (SQLite / MySQL)
 
 #### Table: `long_videos`
 Tracks uploaded source videos and overarching pipeline status.
 
 | Column | Type | Description |
 | :--- | :--- | :--- |
-| `id` | `INT (Auto Increment, PK)` | Unique identifier for the source video. |
+| `id` | `INT / INTEGER (Auto Increment, PK)` | Unique identifier for the source video. |
 | `filename` | `VARCHAR(255)` | Base filename of the video (e.g., `podcast_01.mp4`). |
 | `storage_path` | `VARCHAR(255)` | Absolute filesystem path on host machine. |
-| `status` | `ENUM` | Current state: `'pending'`, `'transcribing'`, `'analyzing'`, `'processing'`, `'completed'`, `'failed'`. |
-| `transcript` | `LONGTEXT (Nullable)` | Complete text transcript extracted by Faster-Whisper. |
-| `processing_settings` | `JSON (Nullable)` | Serialized JSON dictionary of user settings used for rendering. |
+| `status` | `VARCHAR / ENUM` | Current state: `'pending'`, `'transcribing'`, `'analyzing'`, `'processing'`, `'completed'`, `'failed'`. |
+| `transcript` | `TEXT / LONGTEXT (Nullable)` | Complete text transcript extracted by Faster-Whisper. |
+| `processing_settings` | `JSON / TEXT (Nullable)` | Serialized JSON dictionary of user settings used for rendering. |
 | `created_at` / `updated_at` | `TIMESTAMP` | Laravel model timestamps. |
 
 #### Table: `video_clips`
@@ -240,13 +241,13 @@ Tracks individual clips extracted or generated from a `long_video`.
 
 | Column | Type | Description |
 | :--- | :--- | :--- |
-| `id` | `INT (Auto Increment, PK)` | Unique identifier for the clip. |
+| `id` | `INT / INTEGER (Auto Increment, PK)` | Unique identifier for the clip. |
 | `long_video_id` | `BIGINT UNSIGNED (FK)` | Foreign key referencing `long_videos.id` (`ON DELETE CASCADE`). |
 | `start_time` | `VARCHAR(255)` / `TIME` | Timestamp marking start of clip (e.g. `00:01:15`). |
 | `hook_explanation` | `TEXT` / `JSON` | Groq AI generated rich metadata JSON (`title`, `virality_score`, `hook_strength`, `pacing_energy`, `shareability`, `reason`, `social_caption`, `hashtags`, `shorts_description`). |
-| `crop_coordinates_json` | `JSON (Nullable)` | Face tracking or crop coordinates cache. |
+| `crop_coordinates_json` | `JSON / TEXT (Nullable)` | Face tracking, zoom filter, and split-screen filter cache. |
 | `output_path` | `VARCHAR(255) (Nullable)`| Relative path to final MP4 (`storage/app/public/clip_{id}.mp4`). |
-| `status` | `ENUM` | Clip status: `'pending'`, `'rendering'`, `'ready'`. |
+| `status` | `VARCHAR / ENUM` | Clip status: `'pending'`, `'rendering'`, `'ready'`. |
 | `created_at` / `updated_at` | `TIMESTAMP` | Laravel model timestamps. |
 
 ---
@@ -255,11 +256,11 @@ Tracks individual clips extracted or generated from a `long_video`.
 
 | File | Type | Purpose |
 | :--- | :--- | :--- |
-| [`setup.bat`](file:///c:/Users/Sebaz/roninclips/setup.bat) | Batch Script | Automatic Windows dependency check (PHP, Composer, Python, FFmpeg), `.env` copy, key generation, composer install, pip requirements install, and migration execution. |
-| [`start.bat`](file:///c:/Users/Sebaz/roninclips/start.bat) | Batch Script | Launches local Laravel server (`php artisan serve --port=8000`) and automatically opens the user's default browser. |
-| [`install.ps1`](file:///c:/Users/Sebaz/roninclips/install.ps1) | PowerShell | One-liner installation script for remote bootstrapping via GitHub. |
-| [`bin/cli.js`](file:///c:/Users/Sebaz/roninclips/bin/cli.js) | Node.js Executable | NPX entry point enabling `npx roninclips` or global CLI execution. |
-| [`check_status.py`](file:///c:/Users/Sebaz/roninclips/check_status.py) | Python Utility | Reads MySQL directly and prints the 5 latest videos and 10 latest clips with status. |
+| [`setup.bat`](setup.bat) | Batch Script | Automatic Windows dependency check (PHP, Composer, Python, FFmpeg), `.env` copy, key generation, composer install, `storage:link`, pip requirements install, and migration execution. |
+| [`start.bat`](start.bat) | Batch Script | Launches local Laravel server (`php artisan serve --port=8000`) and automatically opens the user's default browser. |
+| [`install.ps1`](install.ps1) | PowerShell | One-liner installation script for remote bootstrapping via GitHub. |
+| [`bin/cli.js`](bin/cli.js) | Node.js Executable | NPX entry point enabling `npx roninclips` or global CLI execution. |
+| [`check_status.py`](check_status.py) | Python Utility | Reads database directly and prints latest videos and clips with status. |
 
 ---
 
@@ -382,7 +383,7 @@ When working on or debugging this codebase, adhere strictly to these architectur
    - This ensures video `t=0`, audio `t=0`, and ASS subtitles `t=0` are strictly synchronized.
 3. **Windows Path Escaping in FFmpeg Filter Strings**:
    - The FFmpeg filter parser uses `:` as a parameter delimiter. Drive letters (e.g. `C:\`) will crash FFmpeg filter chains unless escaped as `C\:/...` or `C\\:/...`.
-   - Use the [`ffmpeg_escape_path()`](file:///c:/Users/Sebaz/roninclips/processor/engine.py#L142) helper to sanitize paths before passing to `ass='...'` or `subtitles='...'`.
+   - Use the [`ffmpeg_escape_path()`](processor/subtitles.py) helper to sanitize paths before passing to `ass='...'` or `subtitles='...'`.
 4. **Windows UTF-8 Encoding**:
    - Windows defaults to `cp1252` encoding in Python subprocesses and stdout, which crashes when printing Unicode emojis or handling non-ASCII paths.
    - Both `engine.py` and `re_render_clip.py` configure `sys.stdout.reconfigure(encoding='utf-8')` and force UTF-8 in all subprocess executions via custom `run_ffmpeg()`.
@@ -395,7 +396,7 @@ When working on or debugging this codebase, adhere strictly to these architectur
    - If a specific Groq model hits rate limits or project restrictions, `engine.py` cycles through a defined fallback array: `["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama3-8b-8192", "llama3-70b-8192", "gemma2-9b-it", "mixtral-8x7b-32768"]`.
 8. **In-Browser Transcript Editing**:
    - Word timings are preserved in `storage/app/clip_{clip_id}_words.json`.
-   - Re-rendering via [`re_render_clip.py`](file:///c:/Users/Sebaz/roninclips/processor/re_render_clip.py) takes less than 2 seconds because it burns the new ASS subtitle file onto the pre-existing intermediate clip without re-running Whisper or Groq.
+   - Re-rendering via [`re_render_clip.py`](processor/re_render_clip.py) takes less than 2 seconds because it burns the new ASS subtitle file and re-mixes BGM onto the pre-existing intermediate clip without re-running Whisper or Groq.
 
 ---
 *Created for RoninClips Codebase Navigation.*

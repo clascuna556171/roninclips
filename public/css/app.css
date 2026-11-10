@@ -1,8 +1,15 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400;1,700&display=swap');
+/* Zero-latency local font fallbacks for 100% offline air-gapped readiness */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 300 800;
+  font-display: swap;
+  src: local('JetBrains Mono'), local('JetBrainsMono-Regular'), local('JetBrainsMono NF'), local('Cascadia Code'), local('Consolas');
+}
 
 :root {
   /* 100% Berkeley / JetBrains Monospace Face across EVERY role */
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', 'Courier New', monospace;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'Segoe UI Mono', 'Menlo', 'Consolas', monospace;
   
   /* OpenCode Austere Dark Palette */
   --color-bg: #161414;

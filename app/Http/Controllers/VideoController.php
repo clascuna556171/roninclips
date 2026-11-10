@@ -291,8 +291,9 @@ class VideoController extends Controller
         $clip = \App\Models\VideoClip::findOrFail($id);
         if ($clip->output_path && file_exists(base_path($clip->output_path))) {
             $absPath = str_replace('/', '\\', base_path($clip->output_path));
+            $cleanPath = str_replace(['"', '`', '%', '$'], '', $absPath);
             if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
-                pclose(popen('explorer.exe /select,"' . $absPath . '"', 'r'));
+                pclose(popen('explorer.exe /select,"' . $cleanPath . '"', 'r'));
             }
             return response()->json(['success' => true]);
         }
