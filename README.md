@@ -199,6 +199,12 @@ Then run: `php artisan migrate`
 </details>
 
 <details>
+<summary><strong>Q: The dashboard says [ DATABASE OFFLINE ]</strong></summary>
+
+**Solution**: Your `.env` uses MySQL and it isn't running. Start MySQL in the XAMPP Control Panel and press **Retry**, or drop XAMPP and use the built-in SQLite database: set `DB_CONNECTION=sqlite`, comment out the other `DB_` lines, and run `php artisan migrate`. SQLite starts empty; your MySQL data stays where it is. The engine never switches databases on its own. If MySQL is down, the job stops with `DATABASE ERROR: ...` in its log.
+</details>
+
+<details>
 <summary><strong>Q: "No AI key set" or "All AI models (Groq, Gemini backup) failed"</strong></summary>
 
 **Solution**: Open **[ API KEYS ]** in the sidebar and paste a [Groq key](https://console.groq.com/keys). Add a [Gemini key](https://aistudio.google.com/apikey) too, so clips still get titled when Groq is down or rate-limited. If a saved key stopped working, paste a new one; the panel tests it before saving.

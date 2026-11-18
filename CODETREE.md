@@ -99,6 +99,7 @@ roninclips/
 │   │       ├── Controller.php             # Base abstract controller
 │   │       └── VideoController.php        # Core backend controller (ingestion, logs, re-rendering, deletion, file picker)
 │   ├── Support/
+│   │   ├── DatabaseOffline.php            # Recognises DB-down/not-migrated errors for the friendly 503 page
 │   │   └── EnvFile.php                    # Reads, writes and masks single .env keys
 │   ├── Models/
 │   │   ├── LongVideo.php                  # Eloquent Model for `long_videos` table (casts processing_settings)
@@ -136,7 +137,7 @@ roninclips/
 │
 ├── 📁 processor/                          # Python AI & Media Processing Subsystem
 │   ├── requirements.txt                   # Python dependencies (faster-whisper, mediapipe, groq, etc.)
-│   ├── db_helper.py                       # Unified Dual-DB connector (transparent SQLite & MySQL support)
+│   ├── db_helper.py                       # Unified Dual-DB connector (SQLite & MySQL; raises DatabaseUnavailable, never switches DBs silently)
 │   ├── hw_accel.py                        # Hardware acceleration probe (CUDA Faster-Whisper & NVENC/QSV/AMF)
 │   ├── engine.py                          # Master processing orchestrator (Single-pass Whisper + Groq + FFmpeg pipeline)
 │   ├── subtitles.py                       # Shared ASS subtitle generator, palette presets & path escaping

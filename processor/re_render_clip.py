@@ -18,7 +18,7 @@ if sys.platform == 'win32':
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 sys.path.insert(0, os.path.dirname(__file__))
-from db_helper import get_db
+from db_helper import get_db, DatabaseUnavailable
 from hw_accel import detect_ffmpeg_encoder
 from subtitles import generate_ass_subtitles, format_ass_time, ffmpeg_escape_path
 
@@ -34,9 +34,13 @@ if __name__ == "__main__":
     if not CLIP_ID:
         sys.exit(0)
 
-    db = get_db()
+    try:
+        db = get_db()
+    except DatabaseUnavailable as db_err:
+        print(f"DATABASE ERROR: {db_err}")
+        sys.exit(1)
     cursor = db.cursor()
-    
+
     cursor.execute("SELECT * FROM video_clips WHERE id = %s", (CLIP_ID,))
     clip = cursor.fetchone()
     if not clip:

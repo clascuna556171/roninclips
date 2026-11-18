@@ -102,10 +102,19 @@ class UnifiedDB:
             pass
 
 
+class DatabaseUnavailable(RuntimeError):
+    """The configured database can't be reached. Never silently switch: the dashboard would read another DB."""
+
+
+MYSQL_OFFLINE_HELP = ("Start MySQL (e.g. in the XAMPP Control Panel), or switch to the built-in SQLite database: "
+                      "set DB_CONNECTION=sqlite in .env, then run `php artisan migrate`.")
+
+
 def get_db():
     """
     Connect to database using .env configuration.
     Defaults to SQLite if DB_CONNECTION is not set or set to 'sqlite'.
+    Raises DatabaseUnavailable when MySQL is configured but unreachable.
     """
     driver = os.environ.get('DB_CONNECTION', 'sqlite').lower().strip()
 
@@ -126,12 +135,14 @@ def get_db():
                 port=db_port
             )
             return UnifiedDB(conn, is_sqlite=False, driver_name="mysql")
+        except ImportError:
+            raise DatabaseUnavailable(
+                "DB_CONNECTION=mysql but mysql-connector-python is not installed. "
+                "Run: processor\\.venv\\Scripts\\pip install -r processor/requirements.txt") from None
         except Exception as e:
-            print(f"[db_helper] MySQL connection failed: {e}")
-            print("[db_helper] Falling back to SQLite...")
-            driver = 'sqlite'
+            raise DatabaseUnavailable(f"MySQL isn't reachable ({e}). {MYSQL_OFFLINE_HELP}") from None
 
-    # SQLite connection (default / fallback)
+    # SQLite connection (default)
     db_path_env = os.environ.get('DB_DATABASE', '')
     candidates = []
     if db_path_env and os.path.isabs(db_path_env):

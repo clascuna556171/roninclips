@@ -18,4 +18,17 @@ return Application::configure(basePath: dirname(__DIR__))
         $exceptions->shouldRenderJsonWhen(
             fn (Request $request) => $request->is('api/*') || $request->expectsJson(),
         );
+
+        // Database down or not set up: explain the fix (start MySQL or use SQLite) instead of a bare 500.
+        $exceptions->render(function (\Throwable $e, Request $request) {
+            $info = \App\Support\DatabaseOffline::detect($e);
+            if ($info === null) {
+                return null;
+            }
+            if ($request->expectsJson()) {
+                return response()->json(['error' => 'database_offline', 'message' => $info['problem']], 503);
+            }
+
+            return response()->view('errors.database-offline', $info, 503);
+        });
     })->create();

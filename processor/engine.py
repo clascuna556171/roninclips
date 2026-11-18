@@ -88,7 +88,7 @@ client = Groq(api_key=os.environ.get("GROQ_API_KEY", ""))
 
 # Import local modules
 sys.path.insert(0, os.path.dirname(__file__))
-from db_helper import get_db
+from db_helper import get_db, DatabaseUnavailable
 from vod_import import import_vod, VodImportError
 from moments import detect_moments
 from hw_accel import get_whisper_config, detect_ffmpeg_encoder, get_hardware_status
@@ -1409,4 +1409,8 @@ Transcript:
     print("Pipeline process finished.")
 
 if __name__ == "__main__":
-    run_pipeline()
+    try:
+        run_pipeline()
+    except DatabaseUnavailable as db_err:
+        print(f"DATABASE ERROR: {db_err}")
+        sys.exit(1)
