@@ -39,3 +39,6 @@ database/*.db*
 tests/scratch/
 
 /.superpowers
+
+/storage/app/vods/
+/bin/TwitchDownloaderCLI/

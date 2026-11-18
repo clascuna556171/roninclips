@@ -1603,3 +1603,23 @@ button, input, select, textarea, pre, code {
   border: 2px solid #ff375f;
   cursor: nwse-resize;
 }
+
+/* ─── VOD link import ─── */
+.source-hint {
+  font-size: 10px;
+  margin-top: 6px;
+  color: var(--color-text-muted);
+}
+.source-hint.ok { color: var(--color-success); }
+.source-hint.warn { color: #ff9f0a; }
+.source-hint.bad { color: #ff3b30; }
+
+.import-error {
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 10px;
+  color: #ff3b30;
+  background: rgba(255, 59, 48, 0.08);
+  border: 1px solid rgba(255, 59, 48, 0.4);
+  border-radius: var(--radius-xs);
+}

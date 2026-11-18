@@ -6,3 +6,4 @@ numpy
 faster-whisper
 groq
 Pillow
+yt-dlp[default,curl-cffi]

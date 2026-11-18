@@ -118,6 +118,13 @@ Ensure the following tools are installed on your system:
 - **Emoji Overlays**: Keyword-triggered animated emoji popups.
 - **BGM Auto-Ducking**: Automatically ducks background music during dialogue and boosts volume during pauses.
 
+### 8. 🔗 Twitch / Kick VOD Link Import
+- Paste a `twitch.tv/videos/…` or `kick.com/<channel>/videos/…` link into the source field instead of a file path. RoninClips downloads the VOD with **yt-dlp** (capped at 1080p, with retries and resume), checks free disk space first, then runs the normal pipeline.
+- **Twitch chat** is saved next to the video as `storage/app/vods/{id}/chat.jsonl`, one JSON object per line: `{"t": <seconds from VOD start>, "author": "...", "message": "..."}`.
+- **Kick imports are video only.** Kick has no public chat-replay API, so its chat can't be fetched reliably.
+- Setup: `pip install "yt-dlp[default,curl-cffi]"` (in `requirements.txt`), and unzip `TwitchDownloaderCLI-<version>-Windows-x64.zip` from [lay295/TwitchDownloader releases](https://github.com/lay295/TwitchDownloader/releases) into `bin/TwitchDownloaderCLI/`. Without it, Twitch imports still work but skip chat.
+- Subscriber-only, deleted and region-locked VODs fail with a plain message on the card. **RETRY** resumes a partial download, and deleting the video also deletes its downloaded folder.
+
 ---
 
 ## ⚙️ Environment Configuration (`.env`)

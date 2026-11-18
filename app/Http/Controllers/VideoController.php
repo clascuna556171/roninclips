@@ -64,16 +64,24 @@ class VideoController extends Controller
     public function store(Request $request)
     {
         $request->validate(['video_path' => 'required|string']);
-        
-        $path = $request->video_path;
-        if (!file_exists($path)) {
-            return redirect()->back()->with('error', 'Error: File does not exist at the provided path.');
+
+        $path = trim($request->video_path);
+        $source = self::parseVodUrl($path);
+
+        if (!$source && preg_match('~^https?://~i', $path)) {
+            return redirect()->back()->with('error', 'Error: Unsupported link. Paste a Twitch VOD link (twitch.tv/videos/…) or a Kick VOD link (kick.com/<channel>/videos/…).');
         }
 
-        $allowedExtensions = ['mp4', 'mov', 'mkv', 'webm', 'm4v', 'avi'];
-        $extension = strtolower(pathinfo($path, PATHINFO_EXTENSION));
-        if (!in_array($extension, $allowedExtensions)) {
-            return redirect()->back()->with('error', 'Error: Unsupported format .' . $extension . '. Supported formats: ' . implode(', ', $allowedExtensions));
+        if (!$source) {
+            if (!file_exists($path)) {
+                return redirect()->back()->with('error', 'Error: File does not exist at the provided path.');
+            }
+
+            $allowedExtensions = ['mp4', 'mov', 'mkv', 'webm', 'm4v', 'avi'];
+            $extension = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+            if (!in_array($extension, $allowedExtensions)) {
+                return redirect()->back()->with('error', 'Error: Unsupported format .' . $extension . '. Supported formats: ' . implode(', ', $allowedExtensions));
+            }
         }
 
         // Build processing settings from form toggles
@@ -100,7 +108,26 @@ class VideoController extends Controller
             'split_screen' => $request->boolean('split_screen'),
             'gaming_layout' => $request->boolean('gaming_layout'),
         ];
-        
+
+        if ($source) {
+            // Link import: the engine downloads the VOD (and Twitch chat) into storage/app/vods/{id}/
+            $settings['source_url'] = $path;
+            $settings['source_platform'] = $source['platform'];
+            $settings['source_vod_id'] = $source['vod_id'];
+
+            $video = LongVideo::create([
+                'filename' => ucfirst($source['platform']) . ' VOD ' . $source['vod_id'],
+                'storage_path' => '',
+                'status' => 'pending',
+                'processing_settings' => $settings,
+            ]);
+
+            $this->dispatchEngineProcess($video);
+
+            $what = $source['platform'] === 'twitch' ? 'video + chat' : "video only, Kick chat can't be fetched";
+            return redirect()->back()->with('success', 'Import started for ' . $video->filename . ' (' . $what . ')');
+        }
+
         $video = LongVideo::create([
             'filename' => basename($path),
             'storage_path' => $path,
@@ -111,6 +138,28 @@ class VideoController extends Controller
         $this->dispatchEngineProcess($video);
 
         return redirect()->back()->with('success', 'Processing started for ' . $video->filename);
+    }
+
+    /**
+     * Recognise a Twitch or Kick VOD link. Mirrors processor/vod_import.py parse_source_url().
+     *
+     * @return array{platform: string, vod_id: string}|null
+     */
+    public static function parseVodUrl(string $url): ?array
+    {
+        $url = trim($url);
+        if (preg_match('~^https?://(?:www\.|m\.)?twitch\.tv/videos/(\d+)~i', $url, $m)) {
+            return ['platform' => 'twitch', 'vod_id' => $m[1]];
+        }
+        if (preg_match('~^https?://(?:www\.)?kick\.com/[\w-]+/videos/([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})~i', $url, $m)) {
+            return ['platform' => 'kick', 'vod_id' => strtolower($m[1])];
+        }
+        return null;
+    }
+
+    private function vodImportDir(LongVideo $video): string
+    {
+        return storage_path('app/vods/' . $video->id);
     }
 
     private function dispatchEngineProcess(LongVideo $video): void
@@ -134,8 +183,10 @@ class VideoController extends Controller
     public function retry($id)
     {
         $video = LongVideo::with('clips')->findOrFail($id);
+        $isImport = !empty($video->processing_settings['source_url']);
 
-        if (!$video->storage_path || !file_exists($video->storage_path)) {
+        // Link imports re-download (resuming any partial file), so a missing file is fine.
+        if (!$isImport && (!$video->storage_path || !file_exists($video->storage_path))) {
             return redirect()->back()->with('error', 'Cannot retry: Source video file no longer exists at ' . $video->storage_path);
         }
 
@@ -197,6 +248,28 @@ class VideoController extends Controller
         } elseif ($sLower === 'failed') {
             $progressPercent = 100;
             $currentStep = 'Pipeline failed. Check console logs.';
+            $importError = $video->processing_settings['import_error'] ?? null;
+            if (!$importError && preg_match('/^IMPORT ERROR: (.+)$/m', $logContent, $m)) {
+                $importError = trim($m[1]);
+            }
+            if ($importError) {
+                $currentStep = 'Import failed: ' . $importError;
+            }
+        } elseif (preg_match_all('/^(Importing \w+ VOD .+|Downloading VOD: .+|Downloading chat log.*)$/m', $logContent, $dl)) {
+            // Link import in progress (status stays 'pending' until the download finishes)
+            $last = trim(end($dl[1]));
+            $currentStep = $last;
+            if (str_starts_with($last, 'Importing')) {
+                $progressPercent = 2;
+                $currentStep = 'Reading VOD info';
+            } elseif (str_starts_with($last, 'Downloading chat')) {
+                $progressPercent = 20;
+                $currentStep = 'Downloading Twitch chat log';
+            } elseif (preg_match('/Downloading VOD: ([\d.]+)%/', $last, $pm)) {
+                $progressPercent = (int) round(2 + min(100, (float) $pm[1]) * 0.18);
+            } else {
+                $progressPercent = 20;
+            }
         } else {
             // Check logs if status is still pending or transitioning
             if (str_contains($logContent, 'Extracting audio')) {
@@ -272,7 +345,12 @@ class VideoController extends Controller
         if (file_exists($logFile)) {
             @unlink($logFile);
         }
-        
+
+        // Link imports own their downloaded VOD + chat folder; local files are never touched.
+        if (!empty($video->processing_settings['source_url'])) {
+            \Illuminate\Support\Facades\File::deleteDirectory($this->vodImportDir($video));
+        }
+
         $video->delete();
         
         return redirect()->back()->with('success', 'Video and all clips removed successfully.');

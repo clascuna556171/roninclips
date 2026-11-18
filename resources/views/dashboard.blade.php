@@ -111,9 +111,9 @@
 
                 <!-- Video File Path Input / Dropzone -->
                 <div class="form-group" style="margin-top: 14px;">
-                    <label for="video_path">[ SOURCE VIDEO FILE ]</label>
+                    <label for="video_path">[ SOURCE VIDEO FILE OR VOD LINK ]</label>
                     <div class="file-dropzone-box" id="file-dropzone">
-                        <input type="text" id="video_path" name="video_path" class="text-input" placeholder="C:\Users\...\podcast.mp4" required>
+                        <input type="text" id="video_path" name="video_path" class="text-input" placeholder="C:\Users\...\stream.mp4  or  https://www.twitch.tv/videos/..." required aria-describedby="source-hint" oninput="updateSourceHint()">
                         <div class="file-input-actions">
                             <button type="button" class="btn-input-action btn-browse" onclick="triggerBrowseFile(this)" id="btn-browse-file" title="Pick file using native file explorer">
                                 <i data-lucide="folder-open" class="icon-sm"></i> BROWSE FILE...
@@ -126,6 +126,7 @@
                             </button>
                         </div>
                     </div>
+                    <div id="source-hint" class="source-hint" aria-live="polite">Local file, or a Twitch / Kick VOD link to download it first.</div>
                 </div>
 
                 <!-- Pipeline Settings Accordion -->
@@ -520,6 +521,20 @@
                                     <span class="folder-glance-badge">
                                         {{ $video->clips->count() }} CLIPS
                                     </span>
+                                    @php $importPlatform = $video->processing_settings['source_platform'] ?? null; @endphp
+                                    @if($importPlatform)
+                                        @php
+                                            $chatStatus = $video->processing_settings['chat_status'] ?? null;
+                                            $chatCount = $video->processing_settings['chat_count'] ?? null;
+                                            $chatLabel = !empty($video->processing_settings['import_error']) ? 'NOT IMPORTED'
+                                                : ($importPlatform === 'kick' ? 'VIDEO ONLY'
+                                                : ($chatStatus === 'saved' ? 'CHAT ' . number_format((int) $chatCount) . ' MSGS'
+                                                : ($chatStatus === 'failed' ? 'CHAT FAILED' : 'CHAT PENDING')));
+                                        @endphp
+                                        <span class="folder-glance-badge" title="{{ $importPlatform === 'kick' ? "Kick chat can't be fetched reliably, so only the video was imported." : 'Imported from a Twitch VOD link' }}">
+                                            <i data-lucide="link" class="icon-sm"></i> {{ strtoupper($importPlatform) }} · {{ $chatLabel }}
+                                        </span>
+                                    @endif
                                     @if($topScore)
                                         <span class="folder-glance-badge viral" title="Top AI Virality Score">
                                             <i data-lucide="flame" class="icon-sm"></i> TOP: {{ $topScore }}/100
@@ -538,7 +553,7 @@
                                             <i data-lucide="copy" class="icon-sm"></i> COPY ALL POSTS
                                         </button>
                                     @endif
-                                    <form action="{{ route('videos.destroy', $video->id) }}" method="POST" onsubmit="return confirm('Delete this video and all associated clips?');" style="margin:0;">
+                                    <form action="{{ route('videos.destroy', $video->id) }}" method="POST" onsubmit="return confirm({{ json_encode($importPlatform ? 'Delete this video, all its clips, AND the downloaded VOD + chat log?' : 'Delete this video and all associated clips?') }});" style="margin:0;">
                                         @csrf
                                         @method('DELETE')
                                         <button type="submit" class="button-danger-sm" title="Delete Video & Clips" aria-label="Delete Video {{ $video->filename }}">
@@ -677,6 +692,10 @@
                                                 </div>
                                             </div>
                                         @endforeach
+                                    </div>
+                                @elseif(!empty($video->processing_settings['import_error']))
+                                    <div class="import-error" role="alert">
+                                        <strong>IMPORT FAILED:</strong> {{ $video->processing_settings['import_error'] }}
                                     </div>
                                 @else
                                     <div style="font-size: 11px; color: var(--color-text-muted); padding: 10px; text-align: center;">
@@ -1064,6 +1083,7 @@
                     if (input) {
                         input.value = data.file_path;
                         input.focus();
+                        if (targetInputId === 'video_path') updateSourceHint();
                         showToast('📁 Selected: ' + data.file_path.split(/[\\\\/]/).pop());
                     }
                 }
@@ -1083,7 +1103,8 @@
                     if (input) {
                         input.value = text.trim();
                         input.focus();
-                        showToast('📋 Pasted file path!');
+                        updateSourceHint();
+                        showToast(/^https?:\/\//i.test(input.value) ? '📋 Pasted link!' : '📋 Pasted file path!');
                     }
                 }
             } catch (e) {
@@ -1096,6 +1117,28 @@
             if (input) {
                 input.value = '';
                 input.focus();
+            }
+            updateSourceHint();
+        }
+
+        // Mirrors VideoController::parseVodUrl()
+        function updateSourceHint() {
+            const input = document.getElementById('video_path');
+            const hint = document.getElementById('source-hint');
+            if (!input || !hint) return;
+            const v = input.value.trim();
+            hint.className = 'source-hint';
+            if (/^https?:\/\/(www\.|m\.)?twitch\.tv\/videos\/\d+/i.test(v)) {
+                hint.textContent = 'Twitch VOD: downloads the video + chat log, then runs the pipeline.';
+                hint.classList.add('ok');
+            } else if (/^https?:\/\/(www\.)?kick\.com\/[\w-]+\/videos\/[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}/i.test(v)) {
+                hint.textContent = "Kick VOD: video only. Kick chat can't be fetched reliably.";
+                hint.classList.add('warn');
+            } else if (/^https?:\/\//i.test(v)) {
+                hint.textContent = 'Unsupported link. Use a Twitch VOD (twitch.tv/videos/…) or Kick VOD (kick.com/<channel>/videos/…).';
+                hint.classList.add('bad');
+            } else {
+                hint.textContent = 'Local file, or a Twitch / Kick VOD link to download it first.';
             }
         }
 

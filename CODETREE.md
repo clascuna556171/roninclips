@@ -143,6 +143,7 @@ roninclips/
 │   ├── emoji_overlay.py                   # Transcript keyword scanner & PIL/FFmpeg animated emoji overlays
 │   ├── transitions.py                     # Scene change detector & FFmpeg whip-pan transition generator
 │   ├── split_screen.py                    # Two-speaker podcast layout detector & split-screen compositor
+│   ├── vod_import.py                      # Twitch/Kick VOD link import: yt-dlp download + Twitch chat → chat.jsonl
 │   ├── re_render_clip.py                  # Standalone transcript subtitle & BGM re-render executor
 │   └── models/
 │       └── blaze_face_short_range.tflite  # MediaPipe BlazeFace short range detection model weights
@@ -212,6 +213,7 @@ roninclips/
 | [`processor/subtitles.py`](processor/subtitles.py) | **ASS Subtitle Generator** | Shared module defining 8 high-contrast color palettes, millisecond time formatting (`format_ass_time`), FFmpeg path escaping (`ffmpeg_escape_path`), and ASS tag/comma sanitization. Consumed by both `engine.py` and `re_render_clip.py`. |
 | [`processor/face_tracker.py`](processor/face_tracker.py) | **Smart Crop & Tracking** | Uses MediaPipe Tasks API (BlazeFace Short Range `.tflite`) to detect faces across sampled frames on intermediate clips. Calculates bounding box centers, applies exponential smoothing (`alpha=0.08`), clamps to video bounds, and generates dynamic or simple 9:16 FFmpeg `crop=w:h:x:y` filters. |
 | [`processor/split_screen.py`](processor/split_screen.py) | **Podcast Split-Screen** | Analyzes face positions across video frames to identify two primary speakers (Left Zone and Right Zone). Generates dual-crop FFmpeg filter complex that stacks the two speakers into a vertical 9:16 top/bottom composition. |
+| [`processor/vod_import.py`](processor/vod_import.py) | **VOD Link Import** | Recognises Twitch/Kick VOD links, checks disk space, downloads with yt-dlp (1080p cap, retries, resume) and logs progress for the dashboard. Fetches Twitch chat via TwitchDownloaderCLI and normalises it to `storage/app/vods/{id}/chat.jsonl` (`t`, `author`, `message`). Kick is video only. Expected failures raise `VodImportError` with a plain message. |
 | [`processor/audio_mixer.py`](processor/audio_mixer.py) | **BGM & Auto-Ducking** | Analyzes speech regions via audio RMS energy calculation using concurrency-safe UUID temp files. Generates dynamic volume envelopes (`volume='if(between(t,...), 0.12, 0.40)':eval=frame`) to duck background music during dialogue and boost music during pauses. |
 | [`processor/effects.py`](processor/effects.py) | **Motion FX & Punch-In** | Detects audio volume spikes (moments of vocal excitement/climax) using sliding RMS energy windows. Generates scale-and-crop zoom filters (1.15x punch-in) or Ken Burns slow zoom (1.0x to 1.05x). Avoids buggy `zoompan` filter to preserve full framerate. |
 | [`processor/emoji_overlay.py`](processor/emoji_overlay.py) | **Animated Emojis** | Scans transcript words against an extensive keyword dictionary (e.g. fire, money, shock, brain, danger). Renders high-res emoji PNGs via Pillow and creates timed FFmpeg overlay filter complex commands with subtle scale/pop animations. |

@@ -68,6 +68,7 @@ client = Groq(api_key=os.environ.get("GROQ_API_KEY", ""))
 # Import local modules
 sys.path.insert(0, os.path.dirname(__file__))
 from db_helper import get_db
+from vod_import import import_vod, VodImportError
 from hw_accel import get_whisper_config, detect_ffmpeg_encoder, get_hardware_status
 from face_tracker import get_smart_crop_filter, get_video_info
 from effects import detect_volume_spikes, generate_punchin_filter, generate_kenburns_filter
@@ -714,6 +715,34 @@ def run_pipeline():
                 print(f"Loaded DB processing settings: {json.dumps(SETTINGS, indent=2)}")
             except Exception as e:
                 print(f"Warning: Could not parse DB settings: {e}")
+
+        # 1b. Link import: download a Twitch/Kick VOD (+ Twitch chat) before the normal pipeline
+        if SETTINGS.get('source_url'):
+            try:
+                stored_settings = json.loads(video.get('processing_settings') or '{}')
+            except (TypeError, ValueError):
+                stored_settings = {}
+            stored_settings.pop('import_error', None)
+            try:
+                imported = import_vod(VIDEO_ID, SETTINGS['source_url'])
+            except VodImportError as imp_err:
+                print(f"\nIMPORT ERROR: {imp_err}")
+                stored_settings['import_error'] = str(imp_err)
+                cursor.execute("UPDATE long_videos SET status = 'failed', processing_settings = %s WHERE id = %s",
+                               (json.dumps(stored_settings), VIDEO_ID))
+                db.commit()
+                return
+            stored_settings.update({
+                'chat_status': imported['chat_status'],
+                'chat_path': imported['chat_path'],
+                'chat_count': imported['chat_count'],
+            })
+            title = imported['title'][:180]
+            cursor.execute("UPDATE long_videos SET storage_path = %s, filename = %s, processing_settings = %s WHERE id = %s",
+                           (imported['path'], title, json.dumps(stored_settings), VIDEO_ID))
+            db.commit()
+            video['storage_path'] = imported['path']
+            video['filename'] = title
 
         # Detect hardware configuration
         hw_pref = SETTINGS.get('hardware_accel', 'auto')
