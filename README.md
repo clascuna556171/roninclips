@@ -128,8 +128,8 @@ Ensure the following tools are installed on your system:
 ### 9. 📈 Stream Moments (chat flood + audio spike detection)
 - Pick **Stream Moments** under Processing Pipeline. It is selected automatically when you paste a VOD link.
 - `processor/moments.py` scores every second of the VOD: chat activity from `chat.jsonl` (messages per second, with copy-paste emote spam counted double) and stream loudness (RMS dB). Each signal is compared with its own previous ~2 minutes, so a chat or streamer that is always busy or loud does not count as a spike.
-- The score is 60% chat + 40% audio. Chat is shifted 6s earlier because viewers react after the event. Kick links and local files use audio only.
-- The best peaks (at least 90s apart) become 40s clips: 25s before the peak and 15s after.
+- The score is 60% chat + 40% audio. Chat is shifted 3s earlier because viewers react after the event. Kick links and local files use audio only.
+- The best peaks (at least 90s apart) become clips that start 15s before the peak and run while chat and audio stay above 35% of the peak (plus 5s), 30 to 60s long. A short burst gets a 30s clip; a long event such as a chase keeps going.
 - Only those windows are transcribed, not the whole VOD, so long streams are much faster. Groq then titles and re-ranks the candidates. If Groq fails or the windows have almost no speech, clips still render with a signal-based reason such as `Chat spiked 8x (142 msgs in 10s) + audio peak (+9 dB)`, which is also shown on the clip card.
 
 ---

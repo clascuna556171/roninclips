@@ -98,11 +98,29 @@ class TestScoring(unittest.TestCase):
         self.assertEqual(pick_peaks(score, 5, min_gap_s=90), [100, 250])
         self.assertEqual(pick_peaks(score, 1, min_gap_s=90), [100])
 
-    def test_clip_window_shifts_at_edges(self):
-        self.assertEqual(clip_window(100, 600), (75.0, 115.0))
-        self.assertEqual(clip_window(5, 600), (0.0, 40.0))
-        self.assertEqual(clip_window(595, 600), (560.0, 600.0))
-        self.assertEqual(clip_window(10, 20), (0.0, 20.0))  # VOD shorter than a window
+    def test_short_burst_gets_minimum_window(self):
+        s = np.zeros(600)
+        s[100:103] = 5.0
+        self.assertEqual(clip_window(s, 101, 600), (86.0, 116.0))  # 15s before, 30s total
+
+    def test_sustained_activity_extends_window(self):
+        s = np.zeros(600)
+        s[100] = 5.0
+        s[101:140] = 2.0       # stays above 35% of the peak for ~40s
+        start, end = clip_window(s, 100, 600)
+        self.assertEqual(start, 85.0)
+        self.assertEqual(end, 144.0)  # last active second 139 + 5s tail
+        s[101:200] = 2.0       # activity for 100s: capped at 60s total
+        self.assertEqual(clip_window(s, 100, 600), (85.0, 145.0))
+        s[101:125] = 2.0
+        s[125:140] = 1.0       # drops below 1.75 at 125
+        self.assertEqual(clip_window(s, 100, 600), (85.0, 129.0))
+
+    def test_window_edges(self):
+        s = np.zeros(600)
+        self.assertEqual(clip_window(s, 5, 600), (0.0, 30.0))
+        self.assertEqual(clip_window(s, 595, 600), (570.0, 600.0))  # shifted back, not shrunk
+        self.assertEqual(clip_window(np.zeros(20), 10, 20), (0.0, 20.0))  # VOD shorter than a window
 
 
 class TestDetector(unittest.TestCase):
@@ -112,7 +130,7 @@ class TestDetector(unittest.TestCase):
         loud[300:304] += 14            # streamer screams at 300s
         loud[600:603] += 6             # smaller audio-only bump later
         chat = steady_chat(duration, 1)
-        for s in range(306, 314):      # chat floods ~6s later
+        for s in range(303, 311):      # chat floods ~3s later
             chat += [(s + 0.1 * i, 'KEKW') for i in range(10)]
         found = detect_moments_from_signals(loud, chat, 3)
         self.assertTrue(found)
@@ -121,7 +139,9 @@ class TestDetector(unittest.TestCase):
         self.assertIn('Chat spiked', top['summary'])
         self.assertIn('audio peak', top['summary'])
         self.assertGreater(top['chat_msgs_10s'], 50)
-        self.assertEqual(top['end'] - top['start'], 40.0)
+        self.assertTrue(30.0 <= top['end'] - top['start'] <= 60.0)
+        self.assertLessEqual(top['start'], 300)   # covers the scream
+        self.assertGreaterEqual(top["end"], 311)  # and the chat flood after it
         peaks = [m['peak'] for m in found]
         self.assertTrue(any(abs(p - 601) <= 4 for p in peaks))
         for a in peaks:

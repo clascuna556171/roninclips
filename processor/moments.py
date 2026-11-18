@@ -12,10 +12,11 @@ from collections import Counter
 
 import numpy as np
 
-# ── Tuning constants (owner-approved defaults, 2026-11-18) ──
+# ── Tuning constants (owner-approved 2026-11-18; lag + window re-tuned on jasontheween VOD 2932190650
+#    against two viewer clips: chat reacted 0-5s after the audio, and fixed windows cut long events short) ──
 CHAT_WEIGHT = 0.6
 AUDIO_WEIGHT = 0.4
-CHAT_LAG_S = 6           # chat reacts this many seconds after the event
+CHAT_LAG_S = 3           # chat reacts this many seconds after the event
 CHAT_SMOOTH_S = 5
 AUDIO_SMOOTH_S = 2
 BASELINE_S = 120         # rolling baseline length
@@ -23,8 +24,11 @@ BASELINE_GAP_S = 10      # ignore the seconds right before t, so a ramp-up doesn
 MIN_BASELINE_S = 30      # below this, fall back to the whole-VOD baseline
 Z_CAP = 10.0             # one signal can't drown the other
 MIN_GAP_S = 90           # minimum distance between picked peaks
-PRE_ROLL_S = 25
-POST_ROLL_S = 15
+PRE_ROLL_S = 15         # window starts this long before the peak
+MIN_CLIP_S = 30
+MAX_CLIP_S = 60
+KEEP_RATIO = 0.35        # window keeps going while activity stays >= this share of the peak
+TAIL_S = 5               # extra seconds after activity drops
 CHAT_FLOOR = 0.5         # msgs/s: minimum spread so a quiet chat's +1 msg isn't a "spike"
 AUDIO_FLOOR_DB = 1.0
 AUDIO_RATE = 8000        # Hz, plenty for loudness
@@ -188,16 +192,22 @@ def pick_peaks(score, count, min_gap_s=MIN_GAP_S):
     return picked
 
 
-def clip_window(peak, duration, pre=PRE_ROLL_S, post=POST_ROLL_S):
-    """[peak-pre, peak+post], shifted (not shrunk) when it hits the VOD edges."""
-    length = pre + post
-    start = peak - pre
-    end = peak + post
-    if start < 0:
-        start, end = 0, min(duration, length)
-    if end > duration:
-        end = duration
-        start = max(0, duration - length)
+def clip_window(score_s, peak, duration, pre=PRE_ROLL_S, min_len=MIN_CLIP_S, max_len=MAX_CLIP_S,
+                keep=KEEP_RATIO, tail=TAIL_S):
+    """
+    Adaptive window: start `pre` seconds before the peak, then follow the (smoothed) score
+    while it stays >= `keep` x the peak's value, plus a short `tail`. Length is clamped to
+    [min_len, max_len]; near the VOD end the start shifts back instead of shrinking.
+    """
+    start = max(0, peak - pre)
+    threshold = keep * float(score_s[peak])
+    end = peak
+    while (threshold > 0 and end + 1 < duration and (end + 1 - start) < max_len
+           and score_s[end + 1] >= threshold):
+        end += 1
+    end = min(duration, start + max_len, max(end + tail, start + min_len))
+    if end - start < min_len:
+        start = max(0, end - min_len)
     return float(start), float(end)
 
 
@@ -239,9 +249,10 @@ def detect_moments_from_signals(loudness_db, messages, count):
         chat_z = rolling_zscore(chat_s, CHAT_FLOOR, rel_floor=0.25)
 
     score = combine_scores(audio_z, chat_z)
+    score_s = smooth(score, CHAT_SMOOTH_S)
     moments = []
     for peak in pick_peaks(score, count):
-        start, end = clip_window(peak, duration)
+        start, end = clip_window(score_s, peak, duration)
         lo, hi = max(0, peak - BASELINE_S), max(0, peak - BASELINE_GAP_S)
         base_db = float(np.median(audio_s[lo:hi])) if hi > lo else float(np.median(audio_s))
         m = {
