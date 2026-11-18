@@ -50,9 +50,13 @@
                     <i data-lucide="cpu" class="icon-sm"></i>
                     <span>{{ $hwBadge ?? 'CUDA GPU' }}</span>
                 </div>
-                <div class="hud-pill hud-pill-llm" title="Active Groq LLM Model">
+                @php
+                    $hasGroqKey = !empty($apiKeys['groq']);
+                    $hasGeminiKey = !empty($apiKeys['gemini']);
+                @endphp
+                <div class="hud-pill {{ ($hasGroqKey || $hasGeminiKey) ? 'hud-pill-llm' : 'hud-pill-jobs' }}" title="{{ $hasGroqKey ? 'Active Groq LLM Model' . ($hasGeminiKey ? ' (Gemini backup ready)' : '') : ($hasGeminiKey ? 'No Groq key: using Gemini' : 'No AI key set') }}">
                     <i data-lucide="bot" class="icon-sm"></i>
-                    <span>{{ $groqModel ?? 'openai/gpt-oss-120b' }}</span>
+                    <span>{{ $hasGroqKey ? ($groqModel ?? 'openai/gpt-oss-120b') : ($hasGeminiKey ? 'GEMINI' : 'NO AI KEY') }}</span>
                 </div>
                 <div class="hud-pill hud-pill-db" title="Database Driver">
                     <i data-lucide="database" class="icon-sm"></i>
@@ -65,6 +69,53 @@
                     </div>
                 @endif
             </div>
+
+            <!-- API keys: Groq (main) + Gemini (backup), saved to .env -->
+            <details class="settings-panel api-keys-panel" id="api-keys-panel" @if(!$hasGroqKey && !$hasGeminiKey) open @endif>
+                <summary class="settings-header">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <i data-lucide="key-round" class="icon-sm" style="color: #38bdf8;"></i>
+                        <span>[ API KEYS ]</span>
+                    </div>
+                    <span class="api-keys-summary">{{ $hasGroqKey ? 'GROQ ✓' : 'GROQ —' }} · {{ $hasGeminiKey ? 'GEMINI ✓' : 'GEMINI —' }}</span>
+                </summary>
+                <form action="{{ route('settings.api-keys') }}" method="POST" class="settings-body api-keys-form" autocomplete="off">
+                    @csrf
+                    @if(!$hasGroqKey && !$hasGeminiKey)
+                        <p class="api-key-hint">The AI that picks and titles your clips needs a free key. Paste one below.</p>
+                    @endif
+
+                    @foreach([
+                        'groq' => ['label' => 'Groq API key', 'role' => 'main', 'url' => 'https://console.groq.com/keys', 'link' => 'Get a free Groq key', 'placeholder' => 'gsk_...', 'help' => 'Picks, scores and titles your clips.'],
+                        'gemini' => ['label' => 'Gemini API key', 'role' => 'backup', 'url' => 'https://aistudio.google.com/apikey', 'link' => 'Get a free Gemini key', 'placeholder' => 'AIza...', 'help' => 'Used only when Groq fails or is rate-limited.'],
+                    ] as $provider => $p)
+                        <div class="form-group api-key-field">
+                            <label for="{{ $provider }}_api_key">{{ $p['label'] }} <span class="api-key-role">({{ $p['role'] }})</span></label>
+                            <div class="api-key-status {{ $apiKeys[$provider] ? 'ok' : '' }}">
+                                {{ $apiKeys[$provider] ? 'Saved: ' . $apiKeys[$provider] : 'Not set' }}
+                            </div>
+                            <div class="api-key-input-row">
+                                <input type="password" id="{{ $provider }}_api_key" name="{{ $provider }}_api_key" class="text-input"
+                                       placeholder="{{ $apiKeys[$provider] ? 'Paste a new key to replace it' : 'Paste your key (' . $p['placeholder'] . ')' }}"
+                                       spellcheck="false" autocapitalize="off" aria-describedby="{{ $provider }}_api_key_help">
+                                <button type="button" class="btn-input-action" onclick="toggleKeyVisibility('{{ $provider }}_api_key', this)" aria-label="Show {{ $p['label'] }}">SHOW</button>
+                            </div>
+                            <div class="api-key-links" id="{{ $provider }}_api_key_help">
+                                <span>{{ $p['help'] }}</span>
+                                <a href="{{ $p['url'] }}" target="_blank" rel="noopener noreferrer">{{ $p['link'] }} <i data-lucide="external-link" class="icon-sm"></i></a>
+                                @if($apiKeys[$provider])
+                                    <button type="submit" name="clear" value="{{ $provider }}" class="api-key-remove" onclick="return confirm('Remove the saved {{ $p['label'] }}?')">Remove</button>
+                                @endif
+                            </div>
+                        </div>
+                    @endforeach
+
+                    <button type="submit" class="btn-input-action api-key-save">
+                        <i data-lucide="shield-check" class="icon-sm"></i> TEST &amp; SAVE KEYS
+                    </button>
+                    <p class="api-key-hint">Keys are saved to this computer's <code>.env</code> file only. Leave a box empty to keep its saved key.</p>
+                </form>
+            </details>
 
             @if(session('success'))
                 <div style="background: rgba(48, 209, 88, 0.15); border: 1px solid rgba(48, 209, 88, 0.4); color: #30d158; padding: 8px 10px; border-radius: 4px; font-size: 11px;">
@@ -1120,6 +1171,14 @@
             } catch (e) {
                 console.error("Clipboard paste error", e);
             }
+        }
+
+        function toggleKeyVisibility(inputId, btn) {
+            const input = document.getElementById(inputId);
+            if (!input) return;
+            const show = input.type === 'password';
+            input.type = show ? 'text' : 'password';
+            btn.textContent = show ? 'HIDE' : 'SHOW';
         }
 
         function clearPathInput() {

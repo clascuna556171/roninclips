@@ -19,11 +19,8 @@ Choose the installation method that fits your environment:
    ```
 2. Double-click **`setup.bat`** (or run `setup.bat` in your terminal).
    - *Automatically verifies prerequisites, creates `.env`, configures SQLite, creates an isolated Python `.venv`, installs dependencies, and runs database migrations.*
-3. Open `.env` and paste your free [Groq API Key](https://console.groq.com):
-   ```ini
-   GROQ_API_KEY="gsk_your_groq_api_key_here"
-   ```
-4. Double-click **`start.bat`** to launch the dashboard at **http://127.0.0.1:8000**!
+3. Double-click **`start.bat`** to launch the dashboard at **http://127.0.0.1:8000**.
+4. Open **[ API KEYS ]** in the sidebar and paste your free [Groq API key](https://console.groq.com/keys). You can add a [Gemini API key](https://aistudio.google.com/apikey) as a backup. Each key is tested before it's saved to `.env`.
 
 ---
 
@@ -47,8 +44,8 @@ cd roninclips
 cp .env.example .env
 php artisan key:generate
 
-# 3. Add your Groq API key in .env
-# Edit .env and set: GROQ_API_KEY="gsk_..."
+# 3. Add your Groq API key: paste it in the dashboard's [ API KEYS ] panel after step 6,
+#    or edit .env and set GROQ_API_KEY="gsk_..." (optional backup: GEMINI_API_KEY="AIza...")
 
 # 4. Install PHP and Python dependencies
 composer install
@@ -132,6 +129,12 @@ Ensure the following tools are installed on your system:
 - The best peaks (at least 90s apart) become clips that start 15s before the peak and run while chat and audio stay above 35% of the peak (plus 5s), 30 to 60s long. A short burst gets a 30s clip; a long event such as a chase keeps going.
 - Only those windows are transcribed, not the whole VOD, so long streams are much faster. Groq then titles and re-ranks the candidates. If Groq fails or the windows have almost no speech, clips still render with a signal-based reason such as `Chat spiked 8x (142 msgs in 10s) + audio peak (+9 dB)`, which is also shown on the clip card.
 
+### 10. 🔑 Paste-Your-Key Setup & Gemini Backup
+- Open **[ API KEYS ]** in the sidebar and paste your keys. No `.env` editing needed. Each box links to where you get a free key: [Groq](https://console.groq.com/keys) (main) and [Gemini](https://aistudio.google.com/apikey) (backup).
+- **TEST & SAVE KEYS** checks each key with Groq or Gemini before saving it to `.env`. A rejected key is not saved. If the provider can't be reached, the key is saved and the message says it wasn't tested.
+- Saved keys are only ever shown masked (`gsk_••••abcd`). **Remove** clears one key. The panel opens by itself, and the model badge reads **NO AI KEY**, when no key is set.
+- **Gemini backup:** the engine tries every Groq model first. Gemini is used only when they all fail (outage, rate limit) or no Groq key is set. The progress bar then reads *Gemini AI (backup)*. Set `GEMINI_MODEL` in `.env` to pin a model.
+
 ---
 
 ## ⚙️ Environment Configuration (`.env`)
@@ -145,7 +148,13 @@ GROQ_API_KEY="gsk_your_key_here"
 
 # Optional: Lock in a specific model (Default: auto-probes live active models)
 GROQ_MODEL=openai/gpt-oss-120b
+
+# Optional backup: used only when every Groq model fails or no Groq key is set
+GEMINI_API_KEY="AIza_your_key_here"
+# GEMINI_MODEL=gemini-2.5-flash
 ```
+
+Both keys can also be pasted in the dashboard's **[ API KEYS ]** panel, which tests each key and writes it to `.env`.
 
 ---
 
@@ -188,6 +197,19 @@ DB_PASSWORD=your_password
 ```
 Then run: `php artisan migrate`
 </details>
+
+<details>
+<summary><strong>Q: "No AI key set" or "All AI models (Groq, Gemini backup) failed"</strong></summary>
+
+**Solution**: Open **[ API KEYS ]** in the sidebar and paste a [Groq key](https://console.groq.com/keys). Add a [Gemini key](https://aistudio.google.com/apikey) too, so clips still get titled when Groq is down or rate-limited. If a saved key stopped working, paste a new one; the panel tests it before saving.
+</details>
+
+---
+
+## 🛣️ Roadmap (planned, not built yet)
+
+- **Twitch watchlist:** follow channels. When your PC is on, RoninClips checks hourly for new VODs (yt-dlp, no API key) and runs Stream Moments on them, newest first, so clips are waiting for you. Twitch keeps VODs for at least 7 days, so time with the PC off is caught up later.
+- **Twitch live clipping:** while a followed streamer is live, read chat anonymously over Twitch IRC, record a rolling ~10-minute buffer with Streamlink + FFmpeg, and cut and caption a clip within a minute or two of each spike. VODs already clipped live are skipped by the watchlist.
 
 ---
 

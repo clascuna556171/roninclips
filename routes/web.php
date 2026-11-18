@@ -2,6 +2,7 @@
 
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\VideoController;
+use App\Http\Controllers\ApiKeyController;
 
 Route::get('/', [VideoController::class, 'index'])->name('dashboard');
 Route::post('/videos', [VideoController::class, 'store'])->name('videos.store');
@@ -15,4 +16,4 @@ Route::get('/clips/{clip}/transcript', [VideoController::class, 'getTranscript']
 Route::get('/clips/{clip}/status', [VideoController::class, 'getClipStatus'])->name('clips.status');
 Route::post('/clips/{clip}/re-render', [VideoController::class, 'reRenderClip'])->name('clips.transcript.update');
 Route::post('/clips/{clip}/facecam', [VideoController::class, 'adjustFacecam'])->name('clips.facecam.update');
-
+Route::post('/settings/api-keys', [ApiKeyController::class, 'update'])->name('settings.api-keys');

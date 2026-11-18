@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use App\Models\LongVideo;
+use App\Support\EnvFile;
 use Symfony\Component\Process\Process;
 
 class VideoController extends Controller
@@ -26,6 +27,10 @@ class VideoController extends Controller
         $videos = LongVideo::with('clips')->latest()->get();
         $dbDriver = config('database.default', 'sqlite');
         $groqModel = config('services.groq.model', 'openai/gpt-oss-120b');
+        $apiKeys = [
+            'groq' => EnvFile::mask(EnvFile::get('GROQ_API_KEY')),
+            'gemini' => EnvFile::mask(EnvFile::get('GEMINI_API_KEY')),
+        ];
         $hasNvidia = file_exists('C:\\Windows\\System32\\nvidia-smi.exe') || file_exists('/usr/bin/nvidia-smi');
         $hwBadge = $hasNvidia ? 'CUDA GPU' : 'CPU ENGINE';
         $activeJobsCount = $videos->whereNotIn('status', ['completed', 'failed'])->count();
@@ -34,7 +39,7 @@ class VideoController extends Controller
         });
 
         return view('dashboard', compact(
-            'videos', 'dbDriver', 'groqModel', 'hwBadge', 'activeJobsCount', 'totalClipsCount'
+            'videos', 'dbDriver', 'groqModel', 'apiKeys', 'hwBadge', 'activeJobsCount', 'totalClipsCount'
         ));
     }
 
@@ -239,9 +244,10 @@ class VideoController extends Controller
         } elseif ($sLower === 'analyzing') {
             $stepIndex = 2;
             $progressPercent = 50;
+            $ai = str_contains($logContent, 'Trying Gemini model') ? 'Gemini AI (backup)' : 'Groq AI';
             $currentStep = !empty($video->processing_settings['stream_moments'])
-                ? 'Ranking stream moments with Groq AI'
-                : 'Analyzing transcript with Groq AI for viral hooks';
+                ? "Ranking stream moments with {$ai}"
+                : "Analyzing transcript with {$ai} for viral hooks";
         } elseif ($sLower === 'processing') {
             $stepIndex = 3;
             $progressPercent = 70;

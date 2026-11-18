@@ -1633,3 +1633,69 @@ button, input, select, textarea, pre, code {
   border: 1px solid rgba(255, 59, 48, 0.4);
   border-radius: var(--radius-xs);
 }
+
+/* ─── API Keys Panel ─── */
+.api-keys-panel { flex-shrink: 0; } /* sidebar is a fixed-height flex column; overflow:hidden would let it collapse */
+.api-keys-panel > summary { list-style: none; }
+.api-keys-panel > summary::-webkit-details-marker { display: none; }
+.api-keys-panel:not([open]) > summary { border-bottom: none; }
+.api-keys-panel > summary:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.api-keys-summary {
+  font-size: 10px;
+  color: var(--color-text-secondary);
+  letter-spacing: 0.04em;
+}
+.api-keys-form .form-group { margin-bottom: 0; }
+.api-key-role { color: var(--color-text-muted); font-weight: 600; }
+.api-key-status {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  margin-bottom: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.api-key-status.ok { color: var(--color-success); }
+.api-key-input-row { display: flex; gap: 4px; }
+.api-key-input-row .text-input { flex: 1; min-width: 0; }
+.api-key-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--color-text-muted);
+}
+.api-key-links a {
+  color: var(--color-accent-hover);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-weight: 700;
+}
+.api-key-links a:hover,
+.api-key-links a:focus-visible { text-decoration: underline; }
+.api-key-remove {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 700;
+  color: var(--color-danger);
+  cursor: pointer;
+}
+.api-key-remove:hover,
+.api-key-remove:focus-visible { text-decoration: underline; }
+.api-key-save {
+  align-self: flex-start;
+  padding: 5px 10px;
+  border-color: rgba(56, 189, 248, 0.4);
+  color: #38bdf8;
+}
+.api-key-hint {
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--color-text-muted);
+  margin: 0;
+}
+.api-key-hint code { color: var(--color-text-secondary); }

@@ -5,7 +5,9 @@ import json
 import re
 import threading
 import concurrent.futures
-from dotenv import load_dotenv
+import urllib.request
+import urllib.error
+from dotenv import load_dotenv, dotenv_values
 from faster_whisper import WhisperModel
 from groq import Groq
 
@@ -18,7 +20,26 @@ if sys.platform == 'win32':
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 # Load Laravel's .env file from the parent directory
-load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
+ENV_FILE = os.path.join(os.path.dirname(__file__), '..', '.env')
+load_dotenv(ENV_FILE)
+
+# Keys pasted in the dashboard are written to .env. A long-running PHP worker can still hold
+# the old value in its environment, so the file wins for these keys when it sets them.
+API_KEY_VARS = ('GROQ_API_KEY', 'GEMINI_API_KEY')
+
+
+def load_api_keys(env_path=ENV_FILE, environ=os.environ):
+    try:
+        values = dotenv_values(env_path)
+    except Exception:
+        return
+    for var in API_KEY_VARS:
+        val = (values.get(var) or '').strip()
+        if val:
+            environ[var] = val
+
+
+load_api_keys()
 
 # 1. Boot Environment & Context
 VIDEO_ID = sys.argv[1] if (__name__ == "__main__" and len(sys.argv) > 1) else None
@@ -230,6 +251,8 @@ GROQ_SYSTEM_PROMPT = ("You are an elite short-form video editor and viral strate
 def get_groq_models():
     """GROQ_MODEL override first, then live models in preferred order, then the rest."""
     groq_models = []
+    if not os.environ.get("GROQ_API_KEY", "").strip():
+        return groq_models
     custom_model = os.environ.get("GROQ_MODEL", "").strip()
     if custom_model:
         groq_models.append(custom_model)
@@ -272,6 +295,131 @@ def groq_complete(prompt, groq_models):
             return chat_completion.choices[0].message.content, None
         except Exception as model_err:
             last_error = model_err
+    return None, last_error
+
+
+# ──────────────────────────────────────────────
+# Gemini backup (used only when every Groq model fails or no Groq key is set)
+# ──────────────────────────────────────────────
+
+GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+GEMINI_PREFERRED_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+]
+GEMINI_SKIP_WORDS = ('embedding', 'tts', 'image', 'live', 'audio', 'aqa', 'vision', 'gemma')
+GEMINI_MAX_MODELS = 5
+_gemini_models_cache = None
+
+
+def _gemini_request(path, api_key, body=None, timeout=120):
+    data = json.dumps(body).encode('utf-8') if body is not None else None
+    req = urllib.request.Request(
+        f"{GEMINI_API_BASE}/{path}",
+        data=data,
+        headers={'Content-Type': 'application/json', 'x-goog-api-key': api_key},
+        method='POST' if data is not None else 'GET',
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as http_err:
+        detail = ''
+        try:
+            detail = json.loads(http_err.read().decode('utf-8')).get('error', {}).get('message', '')
+        except Exception:
+            pass
+        raise RuntimeError(f"Gemini HTTP {http_err.code}: {detail or http_err.reason}") from None
+
+
+def pick_gemini_models(live_names, custom_model=''):
+    """GEMINI_MODEL override first, then preferred live models, then other live text models (flash first)."""
+    models = [custom_model] if custom_model else []
+    live = [n for n in live_names if n.startswith('gemini') and not any(w in n for w in GEMINI_SKIP_WORDS)]
+    if not live:
+        live = list(GEMINI_PREFERRED_MODELS)
+    for pref in GEMINI_PREFERRED_MODELS:
+        if pref in live and pref not in models:
+            models.append(pref)
+    for name in sorted(live, key=lambda n: ('flash' not in n, n)):
+        if name not in models:
+            models.append(name)
+    return models[:GEMINI_MAX_MODELS]
+
+
+def get_gemini_models():
+    global _gemini_models_cache
+    if _gemini_models_cache is not None:
+        return _gemini_models_cache
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        _gemini_models_cache = []
+        return _gemini_models_cache
+    live_names = []
+    try:
+        payload = _gemini_request('models?pageSize=200', api_key, timeout=20)
+        live_names = [
+            m.get('name', '').removeprefix('models/') for m in payload.get('models', [])
+            if 'generateContent' in m.get('supportedGenerationMethods', [])
+        ]
+    except Exception as list_err:
+        print(f"  ℹ️ Gemini model list skipped ({list_err}), using curated list.")
+    _gemini_models_cache = pick_gemini_models(live_names, os.environ.get("GEMINI_MODEL", "").strip())
+    return _gemini_models_cache
+
+
+def gemini_extract_text(payload):
+    candidates = payload.get('candidates') or []
+    if not candidates:
+        reason = (payload.get('promptFeedback') or {}).get('blockReason', 'no candidates')
+        raise RuntimeError(f"Gemini returned no answer ({reason})")
+    parts = (candidates[0].get('content') or {}).get('parts') or []
+    text = ''.join(p.get('text', '') for p in parts if not p.get('thought'))
+    if not text.strip():
+        raise RuntimeError(f"Gemini returned empty text ({candidates[0].get('finishReason', 'unknown')})")
+    return text
+
+
+def gemini_complete(prompt, gemini_models):
+    """Try each Gemini model in order. Returns (raw_text or None, last_error)."""
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    last_error = None
+    for model_name in gemini_models:
+        try:
+            print(f"  Trying Gemini model: {model_name}...")
+            payload = _gemini_request(f"models/{model_name}:generateContent", api_key, {
+                'systemInstruction': {'parts': [{'text': GROQ_SYSTEM_PROMPT}]},
+                'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
+                'generationConfig': {'temperature': 0.3, 'responseMimeType': 'application/json'},
+            })
+            text = gemini_extract_text(payload)
+            print(f"  Success with Gemini model: {model_name}")
+            return text, None
+        except Exception as model_err:
+            last_error = model_err
+    return None, last_error
+
+
+def llm_complete(prompt, groq_models):
+    """Groq first, Gemini as the backup. Returns (raw_text or None, last_error)."""
+    has_groq = bool(os.environ.get("GROQ_API_KEY", "").strip())
+    has_gemini = bool(os.environ.get("GEMINI_API_KEY", "").strip())
+    if not has_groq and not has_gemini:
+        return None, RuntimeError("No AI key set. Paste a Groq or Gemini key in the dashboard's API KEYS panel.")
+
+    last_error = None
+    if has_groq and groq_models:
+        raw, last_error = groq_complete(prompt, groq_models)
+        if raw is not None:
+            return raw, None
+    if has_gemini:
+        if has_groq:
+            print(f"  ⚠️ Groq failed ({last_error}); switching to Gemini backup.")
+        raw, gemini_err = gemini_complete(prompt, get_gemini_models())
+        if raw is not None:
+            return raw, None
+        last_error = gemini_err
     return None, last_error
 
 
@@ -1113,15 +1261,15 @@ def run_pipeline():
             if excerpt_chars < MIN_EXCERPT_CHARS:
                 print(f"\nℹ️ Moment windows have almost no speech ({excerpt_chars} chars); titling from chat/audio signals.")
             else:
-                print("\nRanking stream moments with Groq LLM (titles & social kit)...")
-                raw_response, groq_err = groq_complete(build_moment_prompt(moment_candidates, clip_count), get_groq_models())
+                print("\nRanking stream moments with the AI (titles & social kit)...")
+                raw_response, groq_err = llm_complete(build_moment_prompt(moment_candidates, clip_count), get_groq_models())
                 if raw_response is None:
-                    print(f"  ⚠️ Groq unavailable ({groq_err}); titling from chat/audio signals.")
+                    print(f"  ⚠️ AI unavailable ({groq_err}); titling from chat/audio signals.")
                 else:
                     try:
                         picks = parse_groq_json_response(raw_response)
                     except Exception as parse_err:
-                        print(f"  ⚠️ Groq JSON parse warning ({parse_err}); titling from chat/audio signals.")
+                        print(f"  ⚠️ AI JSON parse warning ({parse_err}); titling from chat/audio signals.")
 
             chosen = merge_moment_picks(moment_candidates, picks, clip_count)
             print(f"Selected {len(chosen)} stream moments.")
@@ -1133,7 +1281,7 @@ def run_pipeline():
                 )
             db.commit()
         else:
-            print("\nAnalyzing transcript with Groq LLM (Virality Scoring & Social Kit)...")
+            print("\nAnalyzing transcript with the AI (Groq, Gemini backup) for virality scoring & social kit...")
             clip_count = int(SETTINGS.get('target_clip_count', 3))
             chunks = split_transcript_into_chunks(transcript_text, max_chars=28000)
             per_chunk_count = max(2, clip_count) if len(chunks) > 1 else clip_count
@@ -1172,7 +1320,7 @@ Return your answer STRICTLY in JSON format matching this structure without any m
 Transcript:
 {chunk_text}"""
 
-                raw_response, chunk_err = groq_complete(prompt, groq_models)
+                raw_response, chunk_err = llm_complete(prompt, groq_models)
                 if chunk_err is not None:
                     last_error = chunk_err
 
@@ -1185,7 +1333,7 @@ Transcript:
                         print(f"  ⚠️ Chunk {c_idx + 1} JSON parse warning: {parse_err}")
 
             if not all_candidates:
-                raise Exception(f"All Groq models failed or returned no valid clips. Last error: {last_error}.")
+                raise Exception(f"All AI models (Groq, Gemini backup) failed or returned no valid clips. Last error: {last_error}.")
 
             # Rank across chunks by virality_score descending and cap to target_clip_count
             if len(chunks) > 1 and len(all_candidates) > clip_count:
