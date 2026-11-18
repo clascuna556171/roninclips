@@ -61,8 +61,10 @@ if __name__ == "__main__":
     # CLI style & position overrides if specified
     if len(sys.argv) > 2 and sys.argv[2].strip():
         SETTINGS['caption_style'] = sys.argv[2].strip()
+    POSITION_OVERRIDDEN = False
     if len(sys.argv) > 3 and sys.argv[3].strip():
         SETTINGS['caption_position'] = sys.argv[3].strip()
+        POSITION_OVERRIDDEN = True
             
     temp_dir = os.path.join(os.path.dirname(__file__), '..', 'storage/app')
     output_dir = os.path.join(temp_dir, 'public')
@@ -81,33 +83,38 @@ if __name__ == "__main__":
             '-avoid_negative_ts', 'make_zero', intermediate_clip, '-y'
         ])
 
-    try:
-        with open(words_json_path, 'r', encoding='utf-8') as f:
-            all_words = json.load(f)
-    except FileNotFoundError:
-        cursor.execute("UPDATE video_clips SET status = 'ready' WHERE id = %s", (CLIP_ID,))
-        db.commit()
-        db.close()
-        sys.exit(1)
-        
-    render_w = 1080 if SETTINGS['output_format'] == '9:16' else 1920
-    render_h = 1920 if SETTINGS['output_format'] == '9:16' else 1080
-    
-    generate_ass_subtitles(
-        all_words, ass_path, render_w, render_h,
-        style_preset=SETTINGS.get('caption_style', 'yellow_pop'),
-        font_family=SETTINGS.get('caption_font', 'Arial Black'),
-        position=SETTINGS.get('caption_position', 'bottom'),
-        layout_mode=SETTINGS.get('caption_layout', 'two_line')
-    )
-    
-    # Check if crop metadata or split screen was saved during initial processing
+    # Check if crop metadata, split screen or gaming layout was saved during initial processing
     crop_info = None
     if clip.get('crop_coordinates_json'):
         try:
             crop_info = json.loads(clip['crop_coordinates_json'])
         except Exception:
             crop_info = None
+    gaming_info = crop_info.get('gaming_layout') if crop_info else None
+
+    # Captions are optional: a facecam adjustment re-renders clips that have none
+    all_words = None
+    try:
+        with open(words_json_path, 'r', encoding='utf-8') as f:
+            all_words = json.load(f)
+    except FileNotFoundError:
+        print(f"  ℹ️ [Clip #{CLIP_ID}] No transcript words saved, rendering without captions")
+
+    render_w = 1080 if SETTINGS['output_format'] == '9:16' else 1920
+    render_h = 1920 if SETTINGS['output_format'] == '9:16' else 1080
+
+    caption_position = SETTINGS.get('caption_position', 'bottom')
+    if gaming_info and not POSITION_OVERRIDDEN:
+        caption_position = 'bottom'
+
+    if all_words:
+        generate_ass_subtitles(
+            all_words, ass_path, render_w, render_h,
+            style_preset=SETTINGS.get('caption_style', 'yellow_pop'),
+            font_family=SETTINGS.get('caption_font', 'Arial Black'),
+            position=caption_position,
+            layout_mode=SETTINGS.get('caption_layout', 'two_line')
+        )
 
     use_split_screen = crop_info.get('use_split_screen', False) if crop_info else False
     saved_crop_filter = crop_info.get('crop_filter') if crop_info else None
@@ -124,95 +131,106 @@ if __name__ == "__main__":
     except Exception:
         w, h = 1920, 1080
 
-        _, encoder_flags = detect_ffmpeg_encoder(preferred_accel=SETTINGS.get('hardware_accel', 'auto'))
-        enc_args = encoder_flags.split() if encoder_flags else ['-c:v', 'libx264', '-preset', 'fast', '-crf', '22']
-        if use_split_screen and saved_split_fc:
-            # Re-apply saved split-screen complex filter with updated subtitles
-            extra_vf = []
-            if saved_zoom_filter:
-                extra_vf.append(saved_zoom_filter)
-            if os.path.exists(ass_path):
-                ass_ffmpeg = ffmpeg_escape_path(ass_path)
-                extra_vf.append(f"ass='{ass_ffmpeg}'")
-            full_fc = saved_split_fc
-            if extra_vf:
-                extra_chain = ",".join(extra_vf)
-                full_fc = saved_split_fc.replace('[outv]', f'[_splitraw];[_splitraw]{extra_chain}[outv]')
-            
-            run_ffmpeg([
-                'ffmpeg', '-i', intermediate_clip, '-filter_complex', full_fc,
-                '-map', '[outv]', '-map', '0:a'
-            ] + enc_args + ['-c:a', 'copy', '-y', output_clip])
-        else:
-            if saved_crop_filter:
-                # Re-use exact face tracking crop
-                filters.append(saved_crop_filter)
-                if SETTINGS['output_format'] == '9:16':
-                    filters.append("scale=1080:1920:force_original_aspect_ratio=decrease")
-                    filters.append("pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black")
-            elif SETTINGS['output_format'] == '9:16':
-                # Fallback to center crop if no saved face tracking filter
-                crop_h = h
-                crop_w = int(h * 9 / 16)
-                crop_w = crop_w - (crop_w % 2)
-                crop_x = (w - crop_w) // 2
-                filters.append(f"crop={crop_w}:{crop_h}:{crop_x}:0")
+    _, encoder_flags = detect_ffmpeg_encoder(preferred_accel=SETTINGS.get('hardware_accel', 'auto'))
+    enc_args = encoder_flags.split() if encoder_flags else ['-c:v', 'libx264', '-preset', 'fast', '-crf', '22']
+    if gaming_info:
+        # Rebuild the gaming layout from the (possibly user-adjusted) facecam box
+        from gaming_layout import build_gaming_filter
+        use_split_screen = True
+        saved_zoom_filter = None
+        saved_split_fc = build_gaming_filter(
+            int(gaming_info.get('input_w') or w),
+            int(gaming_info.get('input_h') or h),
+            gaming_info.get('cam_box')
+        )
+
+    if use_split_screen and saved_split_fc:
+        # Re-apply saved split-screen / gaming complex filter with updated subtitles
+        extra_vf = []
+        if saved_zoom_filter:
+            extra_vf.append(saved_zoom_filter)
+        if os.path.exists(ass_path):
+            ass_ffmpeg = ffmpeg_escape_path(ass_path)
+            extra_vf.append(f"ass='{ass_ffmpeg}'")
+        full_fc = saved_split_fc
+        if extra_vf:
+            extra_chain = ",".join(extra_vf)
+            full_fc = saved_split_fc.replace('[outv]', f'[_splitraw];[_splitraw]{extra_chain}[outv]')
+        
+        run_ffmpeg([
+            'ffmpeg', '-i', intermediate_clip, '-filter_complex', full_fc,
+            '-map', '[outv]', '-map', '0:a'
+        ] + enc_args + ['-c:a', 'copy', '-y', output_clip])
+    else:
+        if saved_crop_filter:
+            # Re-use exact face tracking crop
+            filters.append(saved_crop_filter)
+            if SETTINGS['output_format'] == '9:16':
                 filters.append("scale=1080:1920:force_original_aspect_ratio=decrease")
                 filters.append("pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black")
-                
-            if saved_zoom_filter:
-                filters.append(saved_zoom_filter)
-
-            if os.path.exists(ass_path):
-                ass_ffmpeg = ffmpeg_escape_path(ass_path)
-                filters.append(f"ass='{ass_ffmpeg}'")
-                
-            vf = ",".join(filters) if filters else "null"
+        elif SETTINGS['output_format'] == '9:16':
+            # Fallback to center crop if no saved face tracking filter
+            crop_h = h
+            crop_w = int(h * 9 / 16)
+            crop_w = crop_w - (crop_w % 2)
+            crop_x = (w - crop_w) // 2
+            filters.append(f"crop={crop_w}:{crop_h}:{crop_x}:0")
+            filters.append("scale=1080:1920:force_original_aspect_ratio=decrease")
+            filters.append("pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black")
             
-            run_ffmpeg([
-                'ffmpeg', '-i', intermediate_clip, '-vf', vf
-            ] + enc_args + ['-c:a', 'copy', '-y', output_clip])
+        if saved_zoom_filter:
+            filters.append(saved_zoom_filter)
 
-        # Re-apply Background Music with Auto-Ducking if enabled in video settings
-        if SETTINGS.get('background_music') and SETTINGS.get('bgm_path') and os.path.exists(output_clip):
-            bgm_path = SETTINGS['bgm_path']
-            if os.path.exists(bgm_path):
+        if os.path.exists(ass_path):
+            ass_ffmpeg = ffmpeg_escape_path(ass_path)
+            filters.append(f"ass='{ass_ffmpeg}'")
+            
+        vf = ",".join(filters) if filters else "null"
+        
+        run_ffmpeg([
+            'ffmpeg', '-i', intermediate_clip, '-vf', vf
+        ] + enc_args + ['-c:a', 'copy', '-y', output_clip])
+
+    # Re-apply Background Music with Auto-Ducking if enabled in video settings
+    if SETTINGS.get('background_music') and SETTINGS.get('bgm_path') and os.path.exists(output_clip):
+        bgm_path = SETTINGS['bgm_path']
+        if os.path.exists(bgm_path):
+            try:
+                from audio_mixer import detect_speech_regions, mix_background_music
+                print(f"  🎵 [Clip #{CLIP_ID}] Re-mixing background music with auto-ducking...")
+                temp_audio = os.path.join(temp_dir, f"clip_{CLIP_ID}_rerender_audio.wav")
+                run_ffmpeg(['ffmpeg', '-i', intermediate_clip, '-vn', '-ac', '1', '-ar', '16000', temp_audio, '-y'])
+                speech_regions = []
+                if os.path.exists(temp_audio):
+                    speech_regions = detect_speech_regions(temp_audio, temp_dir=temp_dir)
+
+                clip_dur = 30.0
+                dur_res = run_ffmpeg([
+                    'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                    '-of', 'default=noprint_wrappers=1:nokey=1', output_clip
+                ])
                 try:
-                    from audio_mixer import detect_speech_regions, mix_background_music
-                    print(f"  🎵 [Clip #{CLIP_ID}] Re-mixing background music with auto-ducking...")
-                    temp_audio = os.path.join(temp_dir, f"clip_{CLIP_ID}_rerender_audio.wav")
-                    run_ffmpeg(['ffmpeg', '-i', intermediate_clip, '-vn', '-ac', '1', '-ar', '16000', temp_audio, '-y'])
-                    speech_regions = []
-                    if os.path.exists(temp_audio):
-                        speech_regions = detect_speech_regions(temp_audio, temp_dir=temp_dir)
+                    clip_dur = float(dur_res.stdout.strip())
+                except Exception:
+                    pass
 
-                    clip_dur = 30.0
-                    dur_res = run_ffmpeg([
-                        'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-                        '-of', 'default=noprint_wrappers=1:nokey=1', output_clip
-                    ])
-                    try:
-                        clip_dur = float(dur_res.stdout.strip())
-                    except Exception:
-                        pass
+                bgm_output = os.path.join(temp_dir, f"clip_{CLIP_ID}_bgm.mp4")
+                success = mix_background_music(
+                    output_clip, bgm_path, bgm_output,
+                    speech_regions, clip_dur,
+                    music_volume=0.40, duck_volume=0.12
+                )
+                if success and os.path.exists(bgm_output):
+                    os.replace(bgm_output, output_clip)
+                    print(f"  ✅ [Clip #{CLIP_ID}] Background music re-mixed")
+                elif os.path.exists(bgm_output):
+                    os.remove(bgm_output)
 
-                    bgm_output = os.path.join(temp_dir, f"clip_{CLIP_ID}_bgm.mp4")
-                    success = mix_background_music(
-                        output_clip, bgm_path, bgm_output,
-                        speech_regions, clip_dur,
-                        music_volume=0.40, duck_volume=0.12
-                    )
-                    if success and os.path.exists(bgm_output):
-                        os.replace(bgm_output, output_clip)
-                        print(f"  ✅ [Clip #{CLIP_ID}] Background music re-mixed")
-                    elif os.path.exists(bgm_output):
-                        os.remove(bgm_output)
+                if os.path.exists(temp_audio):
+                    os.remove(temp_audio)
+            except Exception as bgm_err:
+                print(f"  ⚠️ [Clip #{CLIP_ID}] BGM re-mix error: {bgm_err}")
 
-                    if os.path.exists(temp_audio):
-                        os.remove(temp_audio)
-                except Exception as bgm_err:
-                    print(f"  ⚠️ [Clip #{CLIP_ID}] BGM re-mix error: {bgm_err}")
-    
     if os.path.exists(ass_path):
         try:
             os.remove(ass_path)

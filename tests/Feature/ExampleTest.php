@@ -140,3 +140,78 @@ test('retry endpoint rejects missing source file for failed video', function () 
     expect($video->fresh()->status)->toBe('failed');
 });
 
+
+function makeGamingClip(?array $gamingLayout = null): VideoClip
+{
+    $video = LongVideo::create([
+        'filename' => 'gta_stream.mp4',
+        'storage_path' => 'C:\gta_stream.mp4',
+        'status' => 'completed',
+    ]);
+
+    $crop = ['crop_filter' => null, 'use_split_screen' => false];
+    if ($gamingLayout !== null) {
+        $crop['gaming_layout'] = $gamingLayout;
+    }
+
+    return VideoClip::create([
+        'long_video_id' => $video->id,
+        'start_time' => '00:00:00',
+        'end_time' => '00:00:30',
+        'hook_explanation' => json_encode(['title' => 'Chase', 'virality_score' => 90]),
+        'crop_coordinates_json' => json_encode($crop),
+        'status' => 'ready',
+    ]);
+}
+
+test('dashboard shows the gaming facecam layout toggle and preset', function () {
+    $this->get('/')
+        ->assertStatus(200)
+        ->assertSee('Gaming Facecam Layout')
+        ->assertSee('Gaming Stream');
+});
+
+test('adjusting the facecam converts fractions to even source pixels and queues a re-render', function () {
+    $clip = makeGamingClip(['cam_box' => [1500, 40, 360, 270], 'input_w' => 1920, 'input_h' => 1080, 'auto_detected' => true]);
+
+    $this->postJson("/clips/{$clip->id}/facecam", ['x' => 0.5, 'y' => 0.1, 'w' => 0.25, 'h' => 0.3])
+        ->assertStatus(200)
+        ->assertJson(['success' => true, 'cam_box' => [960, 108, 480, 324]]);
+
+    $clip->refresh();
+    $layout = json_decode($clip->crop_coordinates_json, true)['gaming_layout'];
+    expect($clip->status)->toBe('rendering')
+        ->and($layout['cam_box'])->toBe([960, 108, 480, 324])
+        ->and($layout['auto_detected'])->toBeFalse();
+});
+
+test('adjusting the facecam keeps the box inside the frame', function () {
+    $clip = makeGamingClip(['cam_box' => null, 'input_w' => 1920, 'input_h' => 1080]);
+
+    $this->postJson("/clips/{$clip->id}/facecam", ['x' => 0.95, 'y' => 0.95, 'w' => 0.3, 'h' => 0.3])
+        ->assertStatus(200)
+        ->assertJson(['cam_box' => [1344, 756, 576, 324]]);
+});
+
+test('choosing no facecam clears the cam box', function () {
+    $clip = makeGamingClip(['cam_box' => [1500, 40, 360, 270], 'input_w' => 1920, 'input_h' => 1080]);
+
+    $this->postJson("/clips/{$clip->id}/facecam", ['none' => true])
+        ->assertStatus(200)
+        ->assertJson(['success' => true, 'cam_box' => null]);
+});
+
+test('facecam adjustment is rejected for clips without the gaming layout', function () {
+    $clip = makeGamingClip(null);
+
+    $this->postJson("/clips/{$clip->id}/facecam", ['x' => 0.1, 'y' => 0.1, 'w' => 0.2, 'h' => 0.2])
+        ->assertStatus(422);
+});
+
+test('facecam adjustment validates box values', function () {
+    $clip = makeGamingClip(['cam_box' => null, 'input_w' => 1920, 'input_h' => 1080]);
+
+    $this->postJson("/clips/{$clip->id}/facecam", ['x' => 1.5, 'y' => 0.1, 'w' => 0.001, 'h' => 0.2])
+        ->assertStatus(422)
+        ->assertJsonValidationErrors(['x', 'w']);
+});

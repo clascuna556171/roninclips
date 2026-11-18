@@ -102,6 +102,10 @@
                             <strong><i data-lucide="flame" class="icon-sm" style="margin-right: 4px; color: #ff9f0a;"></i> Fast Action</strong>
                             <small>Whip-Pan + Punch-In Zoom</small>
                         </button>
+                        <button type="button" class="preset-card-btn" onclick="applyPreset('gaming_stream', this)">
+                            <strong><i data-lucide="gamepad-2" class="icon-sm" style="margin-right: 4px; color: #ff375f;"></i> Gaming Stream</strong>
+                            <small>9:16 + Facecam Top + Gameplay</small>
+                        </button>
                     </div>
                 </div>
 
@@ -326,6 +330,14 @@
                                     <span class="toggle-text">
                                         <strong>Podcast Split-Screen</strong>
                                         <small>Shows both speakers in stacked panels</small>
+                                    </span>
+                                </label>
+                                <label class="toggle-label" for="gaming_layout">
+                                    <input type="checkbox" id="gaming_layout" name="gaming_layout" value="1" class="toggle-checkbox">
+                                    <span class="toggle-status"></span>
+                                    <span class="toggle-text">
+                                        <strong>Gaming Facecam Layout</strong>
+                                        <small>Facecam on top, whole gameplay below</small>
                                     </span>
                                 </label>
                             </div>
@@ -560,6 +572,10 @@
                                                 $absPath = $clip->output_path ? base_path($clip->output_path) : '';
                                                 $meta = $clip->metadata;
                                                 $vScore = $clip->virality_score;
+                                                $cropInfo = json_decode($clip->crop_coordinates_json ?? '', true);
+                                                $gamingInfo = is_array($cropInfo) ? ($cropInfo['gaming_layout'] ?? null) : null;
+                                                $framePath = storage_path("app/public/clip_{$clip->id}_frame.jpg");
+                                                $frameUrl = ($gamingInfo && file_exists($framePath)) ? asset("storage/clip_{$clip->id}_frame.jpg") . '?v=' . $clipVer : '';
                                             @endphp
                                             <div class="clip-card @if($vScore >= 92) clip-card-highlight @endif" data-clip-id="{{ $clip->id }}" data-status="{{ strtolower($clip->status) }}" data-reason="{{ strtolower($clip->reason . ' ' . $clip->title) }}">
                                                 @if($hasVideo)
@@ -640,6 +656,11 @@
                                                         <button type="button" class="btn-input-action" onclick="openSubsEditor({{ $clip->id }})" title="Edit Subtitle Transcripts">
                                                             <i data-lucide="edit-3" class="icon-sm"></i> SUBS
                                                         </button>
+                                                        @if($frameUrl)
+                                                            <button type="button" class="btn-input-action" onclick="openFacecamEditor({{ $clip->id }}, {{ json_encode($frameUrl) }}, {{ json_encode($gamingInfo) }})" title="Move or resize the facecam box">
+                                                                <i data-lucide="scan-face" class="icon-sm"></i> FACECAM
+                                                            </button>
+                                                        @endif
                                                         @if($hasVideo)
                                                             <button type="button" class="btn-input-action" onclick="openInExplorer({{ $clip->id }}, this)" title="Reveal in Windows Explorer">
                                                                 <i data-lucide="folder-open" class="icon-sm"></i> EXPLORER
@@ -799,6 +820,38 @@
         </div>
     </div>
 
+    <!-- ─── Facecam Box Editor Modal (gaming layout) ─── -->
+    <div class="video-modal-backdrop" id="facecam-modal" onclick="if(event.target===this) closeFacecamEditor()">
+        <div class="video-modal-content" style="max-width: 900px;">
+            <div class="video-modal-header">
+                <div class="video-modal-title">
+                    <i data-lucide="scan-face" class="icon-md" style="color: #ff375f;"></i>
+                    <span>[ ADJUST FACECAM ]</span>
+                </div>
+                <button type="button" class="video-modal-close" onclick="closeFacecamEditor()" aria-label="Close facecam editor"><i data-lucide="x" class="icon-md"></i></button>
+            </div>
+            <div class="video-modal-body" style="flex-direction: column; padding: 14px;">
+                <p id="facecam-hint" style="color: var(--color-text-secondary); font-size: 11px; margin-bottom: 8px;">
+                    Drag the box over the streamer's webcam. Drag the corner handle to resize. Only this clip is re-rendered.
+                </p>
+                <div id="facecam-stage" class="facecam-stage">
+                    <img id="facecam-frame" alt="Frame from this clip" draggable="false">
+                    <div id="facecam-box" class="facecam-box">
+                        <span class="facecam-box-label">FACECAM</span>
+                        <div class="facecam-handle" id="facecam-handle"></div>
+                    </div>
+                </div>
+                <div class="subs-editor-actions" style="display: flex;">
+                    <button type="button" class="btn-input-action" onclick="saveFacecam(true)" title="Render this clip with gameplay only">NO FACECAM</button>
+                    <button type="button" class="btn-input-action" onclick="closeFacecamEditor()">CANCEL</button>
+                    <button type="button" class="btn-subs-save" id="btn-facecam-save" onclick="saveFacecam(false)" style="display: inline-flex; align-items: center; gap: 5px;">
+                        <i data-lucide="refresh-cw" class="icon-sm"></i> SAVE & RE-RENDER
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- ─── Toast Notification Container ─── -->
     <div id="ronin-toast" class="ronin-toast">
         <i data-lucide="check-circle" class="icon-sm" style="color: #30d158;"></i>
@@ -843,6 +896,13 @@
                 bgmPathGroup.style.display = bgmToggle.checked ? 'flex' : 'none';
             }
         }
+        // Gaming layout and podcast split-screen are mutually exclusive
+        const gamingToggle = document.getElementById('gaming_layout');
+        const splitToggle = document.getElementById('split_screen');
+        if (gamingToggle && splitToggle) {
+            gamingToggle.addEventListener('change', () => { if (gamingToggle.checked) splitToggle.checked = false; });
+            splitToggle.addEventListener('change', () => { if (splitToggle.checked) gamingToggle.checked = false; });
+        }
         if (whipPanToggle) whipPanToggle.addEventListener('change', syncConditionalSettings);
         if (bgmToggle) bgmToggle.addEventListener('change', syncConditionalSettings);
 
@@ -861,7 +921,9 @@
             const kenBurns = document.getElementById('ken_burns');
             const whipPan = document.getElementById('whip_pan_transitions');
             const splitScreen = document.getElementById('split_screen');
+            const gamingLayout = document.getElementById('gaming_layout');
             const captionStyle = document.getElementById('caption_style');
+            if (gamingLayout) gamingLayout.checked = false;
 
             if (preset === 'tiktok_viral') {
                 if (vert) vert.checked = true;
@@ -897,6 +959,16 @@
                 if (punchIn) punchIn.checked = true;
                 if (kenBurns) kenBurns.checked = false;
                 if (whipPan) whipPan.checked = true;
+                if (autoCaptions) autoCaptions.checked = true;
+                if (captionStyle) captionStyle.value = 'hormozi_box';
+            } else if (preset === 'gaming_stream') {
+                if (vert) vert.checked = true;
+                if (hooks) hooks.checked = true;
+                if (gamingLayout) gamingLayout.checked = true;
+                if (smartCrop) smartCrop.checked = false;
+                if (splitScreen) splitScreen.checked = false;
+                if (punchIn) punchIn.checked = false;
+                if (kenBurns) kenBurns.checked = false;
                 if (autoCaptions) autoCaptions.checked = true;
                 if (captionStyle) captionStyle.value = 'hormozi_box';
             }
@@ -1448,6 +1520,104 @@
                     window.location.reload();
                 }
             }, 1200);
+        }
+
+        // ─── 7b. Facecam Box Editor (gaming layout) ───
+        // Box is kept in fractions (0..1) of the source frame.
+        let facecamClipId = null;
+        let facecamBox = { x: 0.7, y: 0.05, w: 0.25, h: 0.25 };
+
+        function openFacecamEditor(clipId, frameUrl, info) {
+            facecamClipId = clipId;
+            const iw = Number(info.input_w) || 1920;
+            const ih = Number(info.input_h) || 1080;
+            if (Array.isArray(info.cam_box) && info.cam_box.length === 4) {
+                const [x, y, w, h] = info.cam_box;
+                facecamBox = { x: x / iw, y: y / ih, w: w / iw, h: h / ih };
+            } else {
+                facecamBox = { x: 0.7, y: 0.05, w: 0.25, h: 0.25 };
+            }
+            document.getElementById('facecam-hint').textContent = info.cam_box
+                ? 'Drag the box over the streamer\'s webcam. Drag the corner handle to resize. Only this clip is re-rendered.'
+                : 'No facecam was found in this clip. Place the box over the webcam to add one, or keep it gameplay only.';
+            document.getElementById('facecam-frame').src = frameUrl;
+            document.getElementById('facecam-modal').classList.add('is-visible');
+            renderFacecamBox();
+            if (window.lucide) lucide.createIcons();
+        }
+
+        function closeFacecamEditor() {
+            document.getElementById('facecam-modal').classList.remove('is-visible');
+        }
+
+        function renderFacecamBox() {
+            const box = document.getElementById('facecam-box');
+            box.style.left = (facecamBox.x * 100) + '%';
+            box.style.top = (facecamBox.y * 100) + '%';
+            box.style.width = (facecamBox.w * 100) + '%';
+            box.style.height = (facecamBox.h * 100) + '%';
+        }
+
+        (function initFacecamDrag() {
+            const stage = document.getElementById('facecam-stage');
+            const box = document.getElementById('facecam-box');
+            const handle = document.getElementById('facecam-handle');
+            if (!stage || !box || !handle) return;
+            let mode = null, startX = 0, startY = 0, startBox = null;
+            const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+
+            function begin(e, m) {
+                e.preventDefault();
+                e.stopPropagation();
+                mode = m;
+                startX = e.clientX;
+                startY = e.clientY;
+                startBox = { ...facecamBox };
+                box.setPointerCapture(e.pointerId);
+            }
+            box.addEventListener('pointerdown', e => begin(e, e.target === handle ? 'resize' : 'move'));
+            box.addEventListener('pointermove', e => {
+                if (!mode) return;
+                const rect = stage.getBoundingClientRect();
+                const dx = (e.clientX - startX) / rect.width;
+                const dy = (e.clientY - startY) / rect.height;
+                if (mode === 'move') {
+                    facecamBox.x = clamp(startBox.x + dx, 0, 1 - startBox.w);
+                    facecamBox.y = clamp(startBox.y + dy, 0, 1 - startBox.h);
+                } else {
+                    facecamBox.w = clamp(startBox.w + dx, 0.05, 1 - startBox.x);
+                    facecamBox.h = clamp(startBox.h + dy, 0.05, 1 - startBox.y);
+                }
+                renderFacecamBox();
+            });
+            const end = () => { mode = null; };
+            box.addEventListener('pointerup', end);
+            box.addEventListener('pointercancel', end);
+        })();
+
+        async function saveFacecam(noFacecam) {
+            if (!facecamClipId) return;
+            const btn = document.getElementById('btn-facecam-save');
+            btn.disabled = true;
+            btn.textContent = '⏳ RE-RENDERING...';
+            try {
+                const res = await fetch(`/clips/${facecamClipId}/facecam`, {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify(noFacecam ? { none: true } : facecamBox)
+                });
+                const data = await res.json();
+                if (!res.ok || !data.success) throw new Error(data.error || data.message || 'Could not save facecam box');
+                pollClipReRender(facecamClipId);
+            } catch (err) {
+                alert(err.message);
+                btn.disabled = false;
+                btn.textContent = 'SAVE & RE-RENDER';
+            }
         }
 
         // ─── 8. Background Polling for Active Video Streams ───

@@ -38,3 +38,4 @@ database/*.sqlite*
 database/*.db*
 tests/scratch/
 
+/.superpowers

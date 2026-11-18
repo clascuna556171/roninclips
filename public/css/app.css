@@ -1549,3 +1549,57 @@ button, input, select, textarea, pre, code {
   height: 40px;
   color: var(--color-text-muted);
 }
+
+/* Odd preset count: let the last card span both columns */
+.preset-card-btn:last-child:nth-child(odd) {
+  grid-column: span 2;
+}
+
+/* ─── Facecam Box Editor (gaming layout) ─── */
+.facecam-stage {
+  position: relative;
+  width: 100%;
+  line-height: 0;
+  background: #000;
+  border: 1px solid var(--color-border);
+  overflow: hidden;
+  user-select: none;
+  touch-action: none;
+}
+
+.facecam-stage img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.facecam-box {
+  position: absolute;
+  border: 2px solid #ff375f;
+  background: rgba(255, 55, 95, 0.12);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45);
+  cursor: move;
+}
+
+.facecam-box-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  padding: 2px 6px;
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 700;
+  color: #fff;
+  background: #ff375f;
+}
+
+.facecam-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  background: #fff;
+  border: 2px solid #ff375f;
+  cursor: nwse-resize;
+}

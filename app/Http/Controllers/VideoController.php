@@ -98,6 +98,7 @@ class VideoController extends Controller
             'background_music' => $request->boolean('background_music'),
             'bgm_path' => $request->input('bgm_path', ''),
             'split_screen' => $request->boolean('split_screen'),
+            'gaming_layout' => $request->boolean('gaming_layout'),
         ];
         
         $video = LongVideo::create([
@@ -234,6 +235,7 @@ class VideoController extends Controller
             storage_path("app/clip_{$clip->id}_words.json"),
             storage_path("app/clip_{$clip->id}.ass"),
             storage_path("logs/re_render_{$clip->id}.log"),
+            storage_path("app/public/clip_{$clip->id}_frame.jpg"),
         ];
 
         foreach ($filesToDelete as $file) {
@@ -335,11 +337,6 @@ class VideoController extends Controller
         $captionStyle = $request->input('caption_style', '');
         $captionPos = $request->input('caption_position', '');
 
-        // Run the python re-render script
-        $pythonPath = $this->getPythonBinary();
-        $scriptPath = base_path('processor/re_render_clip.py');
-        $logFile = storage_path('logs/re_render_' . $clip->id . '.log');
-        
         $extraArgs = '';
         if (!empty($captionStyle)) {
             $extraArgs .= ' ' . escapeshellarg($captionStyle);
@@ -347,7 +344,69 @@ class VideoController extends Controller
                 $extraArgs .= ' ' . escapeshellarg($captionPos);
             }
         }
-        
+
+        $this->dispatchReRender($clip, $extraArgs);
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Save a user-adjusted facecam box for a gaming-layout clip and re-render it.
+     * Box values are fractions (0..1) of the source frame; "none" removes the cam panel.
+     */
+    public function adjustFacecam(Request $request, $id)
+    {
+        $clip = \App\Models\VideoClip::findOrFail($id);
+
+        $crop = json_decode($clip->crop_coordinates_json ?? '', true);
+        if (!is_array($crop) || empty($crop['gaming_layout'])) {
+            return response()->json(['error' => 'This clip was not rendered with the gaming facecam layout.'], 422);
+        }
+
+        $request->validate([
+            'none' => 'sometimes|boolean',
+            'x' => 'required_unless:none,true|numeric|min:0|max:1',
+            'y' => 'required_unless:none,true|numeric|min:0|max:1',
+            'w' => 'required_unless:none,true|numeric|min:0.03|max:1',
+            'h' => 'required_unless:none,true|numeric|min:0.03|max:1',
+        ]);
+
+        $layout = $crop['gaming_layout'];
+        $inputW = (int) ($layout['input_w'] ?? 1920);
+        $inputH = (int) ($layout['input_h'] ?? 1080);
+
+        if ($request->boolean('none')) {
+            $layout['cam_box'] = null;
+        } else {
+            $even = fn (float $v) => max(16, ((int) round($v)) - (((int) round($v)) % 2));
+            $w = min($even($request->input('w') * $inputW), $inputW - ($inputW % 2));
+            $h = min($even($request->input('h') * $inputH), $inputH - ($inputH % 2));
+            $x = (int) max(0, min(round($request->input('x') * $inputW), $inputW - $w));
+            $y = (int) max(0, min(round($request->input('y') * $inputH), $inputH - $h));
+            $layout['cam_box'] = [$x, $y, $w, $h];
+        }
+        $layout['auto_detected'] = false;
+        $crop['gaming_layout'] = $layout;
+
+        $clip->crop_coordinates_json = json_encode($crop);
+        $clip->status = 'rendering';
+        $clip->save();
+
+        $this->dispatchReRender($clip);
+
+        return response()->json(['success' => true, 'cam_box' => $layout['cam_box']]);
+    }
+
+    private function dispatchReRender(\App\Models\VideoClip $clip, string $extraArgs = ''): void
+    {
+        if (app()->runningUnitTests()) {
+            return;
+        }
+
+        $pythonPath = $this->getPythonBinary();
+        $scriptPath = base_path('processor/re_render_clip.py');
+        $logFile = storage_path('logs/re_render_' . $clip->id . '.log');
+
         if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
             $cmd = 'start /B cmd /c ""' . $pythonPath . '" "' . $scriptPath . '" ' . $clip->id . $extraArgs . ' > "' . $logFile . '" 2>&1"';
             pclose(popen($cmd, 'r'));
@@ -355,7 +414,5 @@ class VideoController extends Controller
             $cmd = escapeshellarg($pythonPath) . ' ' . escapeshellarg($scriptPath) . ' ' . escapeshellarg($clip->id) . $extraArgs;
             exec($cmd . ' > ' . escapeshellarg($logFile) . ' 2>&1 &');
         }
-
-        return response()->json(['success' => true]);
     }
 }

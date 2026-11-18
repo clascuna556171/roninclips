@@ -14,4 +14,5 @@ Route::post('/browse-file', [VideoController::class, 'browseFile'])->name('video
 Route::get('/clips/{clip}/transcript', [VideoController::class, 'getTranscript'])->name('clips.transcript.get');
 Route::get('/clips/{clip}/status', [VideoController::class, 'getClipStatus'])->name('clips.status');
 Route::post('/clips/{clip}/re-render', [VideoController::class, 'reRenderClip'])->name('clips.transcript.update');
+Route::post('/clips/{clip}/facecam', [VideoController::class, 'adjustFacecam'])->name('clips.facecam.update');
 

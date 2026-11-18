@@ -44,6 +44,7 @@ DEFAULT_SETTINGS = {
     'background_music': False,
     'bgm_path': '',
     'split_screen': False,
+    'gaming_layout': False,
 }
 
 if __name__ == "__main__" and len(sys.argv) > 2 and sys.argv[2] != '--b64':
@@ -74,6 +75,7 @@ from emoji_overlay import scan_transcript_for_emojis, generate_emoji_overlay_dat
 from audio_mixer import detect_speech_regions, mix_background_music
 from transitions import apply_whip_pan_transitions
 from split_screen import get_split_screen_filter
+from gaming_layout import get_gaming_layout
 from subtitles import generate_ass_subtitles, format_ass_time, ffmpeg_escape_path
 
 
@@ -275,10 +277,26 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
         crop_filter = None
         split_filter_complex = None
         use_split_screen = False
+        use_gaming_layout = False
+        gaming_info = None
         render_w = inter_w
         render_h = inter_h
 
-        if SETTINGS['split_screen'] and SETTINGS['output_format'] == '9:16':
+        if SETTINGS.get('gaming_layout') and SETTINGS['output_format'] == '9:16':
+            print(f"  🎮 [Clip #{clip_id}] Looking for streamer facecam (gaming layout)...")
+            try:
+                gaming_info = get_gaming_layout(intermediate_clip, clip_duration)
+                if gaming_info:
+                    use_gaming_layout = True
+                    render_w, render_h = 1080, 1920
+                    print(f"  ✅ [Clip #{clip_id}] Gaming layout ready "
+                          f"({'facecam + gameplay' if gaming_info['cam_box'] else 'gameplay only'})")
+            except Exception as gaming_err:
+                print(f"  ⚠️ [Clip #{clip_id}] Gaming layout failed: {gaming_err}, falling back")
+
+        if use_gaming_layout:
+            pass
+        elif SETTINGS['split_screen'] and SETTINGS['output_format'] == '9:16':
             print(f"  👥 [Clip #{clip_id}] Detecting speakers for split-screen...")
             try:
                 split_fc, split_w, split_h = get_split_screen_filter(
@@ -298,7 +316,9 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
             except Exception as split_err:
                 print(f"  ⚠️ [Clip #{clip_id}] Split-screen detection failed: {split_err}, falling back")
 
-        if not use_split_screen and SETTINGS['smart_crop'] and SETTINGS['output_format'] == '9:16':
+        if use_gaming_layout:
+            pass
+        elif not use_split_screen and SETTINGS['smart_crop'] and SETTINGS['output_format'] == '9:16':
             print(f"  🎯 [Clip #{clip_id}] Running face detection for smart crop...")
             try:
                 crop_filter, crop_w, crop_h = get_smart_crop_filter(
@@ -347,7 +367,9 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
             zoom_w, zoom_h = render_w, render_h
 
         zoom_filter = None
-        if SETTINGS['punch_in_zoom'] and os.path.exists(clip_audio):
+        if use_gaming_layout and (SETTINGS['punch_in_zoom'] or SETTINGS['ken_burns']):
+            print(f"  ℹ️ [Clip #{clip_id}] Punch-in / Ken Burns are off in gaming layout")
+        elif SETTINGS['punch_in_zoom'] and os.path.exists(clip_audio):
             print(f"  🔊 [Clip #{clip_id}] Detecting volume spikes for punch-in zoom...")
             try:
                 spikes = detect_volume_spikes(clip_audio, temp_dir=temp_dir)
@@ -362,7 +384,7 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
                 print(f"  ⚠️ [Clip #{clip_id}] Punch-in detection failed: {fx_err}")
 
         # ─── Step D: Ken Burns Slow Zoom ───
-        if not zoom_filter and SETTINGS['ken_burns'] and not SETTINGS['punch_in_zoom']:
+        if not use_gaming_layout and not zoom_filter and SETTINGS['ken_burns'] and not SETTINGS['punch_in_zoom']:
             print(f"  🎬 [Clip #{clip_id}] Generating Ken Burns slow zoom...")
             try:
                 zoom_filter = generate_kenburns_filter(
@@ -444,7 +466,8 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
                     all_words, ass_path, sub_w, sub_h,
                     style_preset=SETTINGS.get('caption_style', 'yellow_pop'),
                     font_family=SETTINGS.get('caption_font', 'Arial Black'),
-                    position=SETTINGS.get('caption_position', 'bottom'),
+                    # Gaming layout: captions always sit in the blurred area under the gameplay
+                    position='bottom' if use_gaming_layout else SETTINGS.get('caption_position', 'bottom'),
                     layout_mode=SETTINGS.get('caption_layout', 'two_line')
                 )
                 print(f"  [Clip #{clip_id}] Generated {num_events} caption events.")
@@ -469,7 +492,7 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
 
         # ─── Step F: Build composite FFmpeg filter chain ───
         filters = []
-        if not use_split_screen:
+        if not use_split_screen and not use_gaming_layout:
             if crop_filter:
                 filters.append(crop_filter)
             if SETTINGS['output_format'] == '9:16':
@@ -484,16 +507,17 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
             filters.append(f"ass='{ass_ffmpeg}'")
 
         # ─── Step G: Render with FFmpeg ───
-        if use_split_screen:
+        if use_split_screen or use_gaming_layout:
+            layout_fc = gaming_info['filter_complex'] if use_gaming_layout else split_filter_complex
             extra_vf = []
             if ass_path and os.path.exists(ass_path):
                 ass_ffmpeg = ffmpeg_escape_path(ass_path)
                 extra_vf.append(f"ass='{ass_ffmpeg}'")
 
-            full_fc = split_filter_complex
+            full_fc = layout_fc
             if extra_vf:
                 extra_chain = ",".join(extra_vf)
-                full_fc = split_filter_complex.replace('[outv]', f'[_splitraw];[_splitraw]{extra_chain}[outv]')
+                full_fc = layout_fc.replace('[outv]', f'[_splitraw];[_splitraw]{extra_chain}[outv]')
 
             ffmpeg_cmd = (
                 f'ffmpeg -i "{intermediate_clip}" '
@@ -502,10 +526,12 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
                 f'{encoder_flags} -c:a aac -b:a 128k -movflags +faststart '
                 f'"{output_clip}" -y'
             )
-            print(f"  🎬 [Clip #{clip_id}] Encoding split-screen...")
+            layout_name = 'gaming layout' if use_gaming_layout else 'split-screen'
+            print(f"  🎬 [Clip #{clip_id}] Encoding {layout_name}...")
             encode_result = run_ffmpeg(ffmpeg_cmd)
             if encode_result.returncode != 0:
-                print(f"  ⚠️ [Clip #{clip_id}] Split-screen encode failed, falling back to normal crop")
+                print(f"  ⚠️ [Clip #{clip_id}] {layout_name} encode failed, falling back to normal crop")
+                print(f"     {(encode_result.stderr or '')[-600:]}")
                 crop_h_fb = inter_h
                 crop_w_fb = int(inter_h * 9 / 16)
                 crop_w_fb = crop_w_fb - (crop_w_fb % 2)
@@ -617,6 +643,19 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
             'render_w': render_w,
             'render_h': render_h,
         }
+        if use_gaming_layout:
+            crop_data['gaming_layout'] = {
+                'cam_box': gaming_info['cam_box'],
+                'input_w': gaming_info['input_w'],
+                'input_h': gaming_info['input_h'],
+                'auto_detected': gaming_info['auto_detected'],
+            }
+            # Still frame for the "Adjust facecam" editor in the dashboard
+            frame_path = os.path.join(output_dir, f"clip_{clip_id}_frame.jpg")
+            run_ffmpeg([
+                'ffmpeg', '-ss', f"{clip_duration / 2:.2f}", '-i', intermediate_clip,
+                '-frames:v', '1', '-q:v', '3', frame_path, '-y'
+            ])
         thread_cursor.execute(
             "UPDATE video_clips SET output_path = %s, crop_coordinates_json = %s, status = 'ready' WHERE id = %s",
             (relative_output, json.dumps(crop_data), clip_id)
@@ -664,7 +703,8 @@ def run_pipeline():
                 SETTINGS.update(db_settings)
                 
                 for key in ['full_video_mode', 'smart_crop', 'auto_captions', 'punch_in_zoom', 'ken_burns',
-                            'emoji_overlays', 'whip_pan_transitions', 'background_music', 'split_screen']:
+                            'emoji_overlays', 'whip_pan_transitions', 'background_music', 'split_screen',
+                            'gaming_layout']:
                     val = SETTINGS.get(key)
                     if isinstance(val, str):
                         SETTINGS[key] = val.lower() in ('true', '1', 'yes')
