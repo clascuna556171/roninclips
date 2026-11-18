@@ -164,6 +164,10 @@
                                         <input type="radio" name="processing_mode" value="viral_hooks" checked id="mode_hooks">
                                         <span>AI Viral Hooks</span>
                                     </label>
+                                    <label class="radio-label" title="Finds chat floods and audio spikes. Uses Twitch chat when it was imported, audio only otherwise.">
+                                        <input type="radio" name="processing_mode" value="stream_moments" id="mode_moments">
+                                        <span>Stream Moments</span>
+                                    </label>
                                     <label class="radio-label">
                                         <input type="radio" name="processing_mode" value="full_video" id="mode_full">
                                         <span>Full Video</span>
@@ -650,6 +654,12 @@
                                                     <div class="clip-reason">
                                                         "{{ $clip->reason }}"
                                                     </div>
+                                                    @php $signalSummary = ($clip->metadata['source'] ?? null) === 'stream_moments' ? ($clip->metadata['signal_summary'] ?? '') : ''; @endphp
+                                                    @if($signalSummary && $signalSummary !== $clip->reason)
+                                                        <div class="clip-signal" title="Why the detector picked this moment">
+                                                            <i data-lucide="activity" class="icon-sm"></i> {{ $signalSummary }}
+                                                        </div>
+                                                    @endif
 
                                                     <!-- Primary Actions: Preview & Download -->
                                                     <div class="clip-action-bar-row">
@@ -1128,6 +1138,15 @@
             if (!input || !hint) return;
             const v = input.value.trim();
             hint.className = 'source-hint';
+            // Pasting a VOD link switches AI Hooks -> Stream Moments once; a manual choice afterwards sticks.
+            const isVod = /^https?:\/\/(www\.|m\.)?twitch\.tv\/videos\/\d+/i.test(v)
+                || /^https?:\/\/(www\.)?kick\.com\/[\w-]+\/videos\/[0-9a-f-]{36}/i.test(v);
+            if (isVod && !input.dataset.wasVod) {
+                const hooksMode = document.getElementById('mode_hooks');
+                const momentsMode = document.getElementById('mode_moments');
+                if (hooksMode && momentsMode && hooksMode.checked) momentsMode.checked = true;
+            }
+            if (isVod) input.dataset.wasVod = '1'; else delete input.dataset.wasVod;
             if (/^https?:\/\/(www\.|m\.)?twitch\.tv\/videos\/\d+/i.test(v)) {
                 hint.textContent = 'Twitch VOD: downloads the video + chat log, then runs the pipeline.';
                 hint.classList.add('ok');

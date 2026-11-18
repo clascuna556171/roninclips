@@ -144,6 +144,7 @@ roninclips/
 │   ├── transitions.py                     # Scene change detector & FFmpeg whip-pan transition generator
 │   ├── split_screen.py                    # Two-speaker podcast layout detector & split-screen compositor
 │   ├── vod_import.py                      # Twitch/Kick VOD link import: yt-dlp download + Twitch chat → chat.jsonl
+│   ├── moments.py                         # Stream Moments: chat-flood + audio-spike detection → clip windows
 │   ├── re_render_clip.py                  # Standalone transcript subtitle & BGM re-render executor
 │   └── models/
 │       └── blaze_face_short_range.tflite  # MediaPipe BlazeFace short range detection model weights
@@ -214,6 +215,7 @@ roninclips/
 | [`processor/face_tracker.py`](processor/face_tracker.py) | **Smart Crop & Tracking** | Uses MediaPipe Tasks API (BlazeFace Short Range `.tflite`) to detect faces across sampled frames on intermediate clips. Calculates bounding box centers, applies exponential smoothing (`alpha=0.08`), clamps to video bounds, and generates dynamic or simple 9:16 FFmpeg `crop=w:h:x:y` filters. |
 | [`processor/split_screen.py`](processor/split_screen.py) | **Podcast Split-Screen** | Analyzes face positions across video frames to identify two primary speakers (Left Zone and Right Zone). Generates dual-crop FFmpeg filter complex that stacks the two speakers into a vertical 9:16 top/bottom composition. |
 | [`processor/vod_import.py`](processor/vod_import.py) | **VOD Link Import** | Recognises Twitch/Kick VOD links, checks disk space, downloads with yt-dlp (1080p cap, retries, resume) and logs progress for the dashboard. Fetches Twitch chat via TwitchDownloaderCLI and normalises it to `storage/app/vods/{id}/chat.jsonl` (`t`, `author`, `message`). Kick is video only. Expected failures raise `VodImportError` with a plain message. |
+| [`processor/moments.py`](processor/moments.py) | **Stream Moments** | Builds per-second chat activity (from `chat.jsonl`, emote spam counted double) and loudness (FFmpeg PCM stream, constant memory). Scores each against its own rolling 2-minute baseline (median/MAD, upward only, capped), combines 60% chat (shifted 6s earlier) + 40% audio, picks peaks ≥90s apart and returns 40s windows (−25s/+15s) with a one-line reason. Audio-only when there is no chat. `engine.py` then transcribes only those windows and asks Groq to title and re-rank them, falling back to signal-based metadata. |
 | [`processor/audio_mixer.py`](processor/audio_mixer.py) | **BGM & Auto-Ducking** | Analyzes speech regions via audio RMS energy calculation using concurrency-safe UUID temp files. Generates dynamic volume envelopes (`volume='if(between(t,...), 0.12, 0.40)':eval=frame`) to duck background music during dialogue and boost music during pauses. |
 | [`processor/effects.py`](processor/effects.py) | **Motion FX & Punch-In** | Detects audio volume spikes (moments of vocal excitement/climax) using sliding RMS energy windows. Generates scale-and-crop zoom filters (1.15x punch-in) or Ken Burns slow zoom (1.0x to 1.05x). Avoids buggy `zoompan` filter to preserve full framerate. |
 | [`processor/emoji_overlay.py`](processor/emoji_overlay.py) | **Animated Emojis** | Scans transcript words against an extensive keyword dictionary (e.g. fire, money, shock, brain, danger). Renders high-res emoji PNGs via Pillow and creates timed FFmpeg overlay filter complex commands with subtle scale/pop animations. |
@@ -298,6 +300,11 @@ sequenceDiagram
     Py->>DB: UPDATE long_videos (status: analyzing)
     alt Full Video Mode
         Py->>DB: INSERT single full-length clip into video_clips
+    else Stream Moments Mode
+        Py->>Py: moments.py scores chat.jsonl + audio loudness, picks peak windows
+        Py->>FW: Transcribe only the candidate windows
+        Py->>GQ: Title & re-rank candidates (skipped or fallback when speech is thin)
+        Py->>DB: INSERT chosen windows into video_clips with signal summary
     else Viral Hooks Mode
         Py->>GQ: Prompt active model (openai/gpt-oss-120b, qwen3.6-27b, etc.) for hooks & virality scores
         GQ-->>Py: Return JSON clips (start, end, title, virality_score, post kit)

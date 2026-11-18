@@ -525,7 +525,8 @@ button, input, select, textarea, pre, code {
 
 .radio-group {
   display: flex;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 6px 12px;
 }
 
 .radio-label {
@@ -883,6 +884,15 @@ button, input, select, textarea, pre, code {
   background: rgba(255, 255, 255, 0.02);
   border-left: 2px solid var(--color-border);
   padding: 4px 6px;
+}
+
+.clip-signal {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--color-text-secondary);
+  line-height: 1.35;
 }
 
 /* Action Rows */

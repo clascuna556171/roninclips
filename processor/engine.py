@@ -69,6 +69,7 @@ client = Groq(api_key=os.environ.get("GROQ_API_KEY", ""))
 sys.path.insert(0, os.path.dirname(__file__))
 from db_helper import get_db
 from vod_import import import_vod, VodImportError
+from moments import detect_moments
 from hw_accel import get_whisper_config, detect_ffmpeg_encoder, get_hardware_status
 from face_tracker import get_smart_crop_filter, get_video_info
 from effects import detect_volume_spikes, generate_punchin_filter, generate_kenburns_filter
@@ -204,6 +205,218 @@ def split_transcript_into_chunks(transcript_text, max_chars=28000):
         chunks.append("\n".join(current_lines))
 
     return chunks
+
+
+# ──────────────────────────────────────────────
+# Groq helpers (shared by AI hooks and stream moments)
+# ──────────────────────────────────────────────
+
+GROQ_PREFERRED_MODELS = [
+    "openai/gpt-oss-120b",
+    "llama-3.3-70b-versatile",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3.6-27b",
+    "llama-3.1-8b-instant",
+    "qwen/qwen3-32b",
+    "groq/compound",
+    "groq/compound-mini",
+]
+
+GROQ_SYSTEM_PROMPT = ("You are an elite short-form video editor and viral strategist AI. You analyze transcripts, "
+                      "find the most viral moments, score them with precision, and generate high-converting social "
+                      "media copy. Always respond with valid JSON only, no markdown.")
+
+
+def get_groq_models():
+    """GROQ_MODEL override first, then live models in preferred order, then the rest."""
+    groq_models = []
+    custom_model = os.environ.get("GROQ_MODEL", "").strip()
+    if custom_model:
+        groq_models.append(custom_model)
+    try:
+        live_models = client.models.list().data
+        active_chat_ids = [
+            m.id for m in live_models
+            if not any(k in m.id.lower() for k in ['whisper', 'orpheus', 'tts', 'playai', 'guard', 'embedding'])
+        ]
+        for pref in GROQ_PREFERRED_MODELS:
+            if pref in active_chat_ids and pref not in groq_models:
+                groq_models.append(pref)
+        for m_id in active_chat_ids:
+            if m_id not in groq_models:
+                groq_models.append(m_id)
+        print(f"  Live Groq models discovered: {len(active_chat_ids)} models available")
+    except Exception as query_err:
+        print(f"  ℹ️ Live model query skipped ({query_err}), using curated active fallback list.")
+        for pref in GROQ_PREFERRED_MODELS:
+            if pref not in groq_models:
+                groq_models.append(pref)
+    return groq_models
+
+
+def groq_complete(prompt, groq_models):
+    """Try each model in order. Returns (raw_text or None, last_error)."""
+    last_error = None
+    for model_name in groq_models:
+        try:
+            print(f"  Trying model: {model_name}...")
+            chat_completion = client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": GROQ_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                model=model_name,
+                temperature=0.3,
+            )
+            print(f"  Success with model: {model_name}")
+            return chat_completion.choices[0].message.content, None
+        except Exception as model_err:
+            last_error = model_err
+    return None, last_error
+
+
+# ──────────────────────────────────────────────
+# Stream moments (chat flood + audio spike) helpers
+# ──────────────────────────────────────────────
+
+STREAM_HASHTAGS = '#stream #gaming #clips #fyp #twitch'
+MIN_EXCERPT_CHARS = 40   # below this the transcript can't help Groq; use signal-based titles
+
+
+def _signal_pct(z):
+    return max(50, min(99, int(round(60 + 4 * (z or 0)))))
+
+
+def moment_fallback_meta(m):
+    """Metadata built from the detector alone (used when Groq is skipped or fails)."""
+    summary = m['summary']
+    return {
+        'title': f"Stream moment at {format_time(m['peak'])}",
+        'virality_score': _signal_pct(m['score']),
+        'hook_strength': _signal_pct(m['chat_z'] if m.get('chat_msgs_10s') is not None else m['score']),
+        'pacing_energy': _signal_pct(m['audio_z']),
+        'shareability': _signal_pct(m['score']),
+        'reason': summary,
+        'social_caption': f"{summary} 🔥",
+        'hashtags': STREAM_HASHTAGS,
+        'shorts_description': summary,
+        'source': 'stream_moments',
+        'signal_summary': summary,
+        'signals': {k: m.get(k) for k in ('peak', 'score', 'chat_z', 'audio_z',
+                                         'chat_msgs_10s', 'chat_ratio', 'audio_db_above')},
+    }
+
+
+def build_moment_prompt(candidates, count):
+    blocks = []
+    for i, m in enumerate(candidates):
+        excerpt = (m.get('excerpt') or '').strip()[:1200] or '(no clear speech)'
+        blocks.append(f"Moment {i}: {format_time(m['start'])}-{format_time(m['end'])}\n"
+                      f"Signals: {m['summary']}\nTranscript: \"{excerpt}\"")
+    return f"""These are candidate moments from a livestream VOD, found automatically where chat flooded and/or the stream audio spiked.
+Pick the best {count} for short-form vertical clips (TikTok / Reels / Shorts), best first. Do not invent times; refer to moments only by their id.
+For each pick give a realistic Virality Score (1-100) with sub-scores, a punchy high-CTR title, a social caption with emojis, hashtags and a YouTube Shorts description.
+
+Return STRICTLY a JSON array, no markdown:
+[
+  {{
+    "id": 0,
+    "title": "Short Punchy Title",
+    "virality_score": 90,
+    "hook_strength": 90,
+    "pacing_energy": 90,
+    "shareability": 90,
+    "reason": "Why this moment works",
+    "social_caption": "Caption with emojis",
+    "hashtags": "#gaming #fyp",
+    "shorts_description": "Search-optimized description"
+  }}
+]
+
+Candidates:
+""" + "\n\n".join(blocks)
+
+
+def merge_moment_picks(candidates, picks, count):
+    """
+    Groq's valid picks first (in its order, by id), then fill from the detector's
+    ranking. Returns [(moment, meta)] sorted by start time.
+    """
+    chosen = []
+    used = set()
+    for p in picks or []:
+        if not isinstance(p, dict) or len(chosen) >= count:
+            continue
+        try:
+            idx = int(p.get('id'))
+        except (TypeError, ValueError):
+            continue
+        if idx in used or not (0 <= idx < len(candidates)):
+            continue
+        m = candidates[idx]
+        meta = moment_fallback_meta(m)
+        for key in ('title', 'reason', 'social_caption', 'hashtags', 'shorts_description'):
+            if isinstance(p.get(key), str) and p[key].strip():
+                meta[key] = p[key].strip()
+        for key in ('virality_score', 'hook_strength', 'pacing_energy', 'shareability'):
+            try:
+                meta[key] = max(1, min(100, int(p[key])))
+            except (KeyError, TypeError, ValueError):
+                pass
+        chosen.append((m, meta))
+        used.add(idx)
+    for idx, m in enumerate(candidates):
+        if len(chosen) >= count:
+            break
+        if idx not in used:
+            chosen.append((m, moment_fallback_meta(m)))
+            used.add(idx)
+    chosen.sort(key=lambda pair: pair[0]['start'])
+    return chosen
+
+
+def _is_cuda_error(err):
+    return 'cublas' in str(err).lower() or 'cuda' in str(err).lower()
+
+
+def transcribe_moment_windows(whisper_model, whisper_tier, audio_path, candidates, task, temp_dir):
+    """
+    Transcribe only the candidate windows. Adds m['excerpt'] to each candidate and returns
+    (transcript_text, full_words, whisper_model) with VOD-absolute word timestamps.
+    """
+    full_words = []
+    lines = []
+    for i, m in enumerate(candidates):
+        print(f"  📝 Transcribing moment window {i + 1}/{len(candidates)} "
+              f"({format_time(m['start'])}-{format_time(m['end'])})...")
+        wav = os.path.join(temp_dir, f"moment_{VIDEO_ID}_{i}.wav")
+        run_ffmpeg(['ffmpeg', '-ss', f"{m['start']:.3f}", '-t', f"{m['end'] - m['start']:.3f}",
+                    '-i', audio_path, '-ac', '1', '-ar', '16000', wav, '-y'])
+        segments = []
+        try:
+            if os.path.exists(wav):
+                try:
+                    with WHISPER_LOCK:
+                        segments = list(whisper_model.transcribe(wav, beam_size=5, word_timestamps=True, task=task)[0])
+                except Exception as w_err:
+                    if not _is_cuda_error(w_err):
+                        raise
+                    print(f"  ⚠️ Whisper CUDA execution failed ({w_err}), falling back to CPU (int8)...")
+                    whisper_model = WhisperModel(whisper_tier, device='cpu', compute_type='int8')
+                    with WHISPER_LOCK:
+                        segments = list(whisper_model.transcribe(wav, beam_size=5, word_timestamps=True, task=task)[0])
+        finally:
+            if os.path.exists(wav):
+                os.remove(wav)
+        texts = []
+        for seg in segments:
+            texts.append(seg.text.strip())
+            lines.append(f"[{format_time(m['start'] + seg.start)} - {format_time(m['start'] + seg.end)}] {seg.text.strip()}")
+            for w in (seg.words or []):
+                full_words.append({'word': w.word.strip(), 'start': m['start'] + w.start, 'end': m['start'] + w.end})
+        m['excerpt'] = ' '.join(t for t in texts if t)
+    full_words.sort(key=lambda w: w['start'])
+    return "\n".join(lines), full_words, whisper_model
 
 
 def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output_dir, temp_dir, full_words=None):
@@ -743,6 +956,7 @@ def run_pipeline():
             db.commit()
             video['storage_path'] = imported['path']
             video['filename'] = title
+            SETTINGS['chat_path'] = imported['chat_path']
 
         # Detect hardware configuration
         hw_pref = SETTINGS.get('hardware_accel', 'auto')
@@ -789,26 +1003,32 @@ def run_pipeline():
             whisper_model = WhisperModel(whisper_tier, device='cpu', compute_type='int8')
 
         full_words = []
-        try:
-            segments_iter, info = whisper_model.transcribe(audio_path, beam_size=5, word_timestamps=True, task=whisper_task)
-            transcript_text = ""
-            for segment in segments_iter:
-                transcript_text += f"[{format_time(segment.start)} - {format_time(segment.end)}] {segment.text.strip()}\n"
-                if segment.words:
-                    for w in segment.words:
-                        full_words.append({
-                            'word': w.word.strip(),
-                            'start': w.start,
-                            'end': w.end,
-                        })
-            print(f"Detected language: {info.language} (probability: {info.language_probability:.2f})")
-        except Exception as w_trans_err:
-            if ('cublas' in str(w_trans_err).lower() or 'cuda' in str(w_trans_err).lower()) and whisper_cfg.get('device') == 'cuda':
-                print(f"  ⚠️ Whisper CUDA execution failed ({w_trans_err}), falling back to CPU (int8)...")
-                whisper_model = WhisperModel(whisper_tier, device='cpu', compute_type='int8')
+        moment_candidates = None
+        moments_mode = bool(SETTINGS.get('stream_moments')) and not SETTINGS.get('full_video_mode', False)
+        if moments_mode:
+            # Feature 3: find chat floods + audio spikes first, then transcribe only those windows
+            chat_path = SETTINGS.get('chat_path')
+            if chat_path and not os.path.exists(chat_path):
+                print(f"  ⚠️ Chat log not found at {chat_path}; using audio only.")
+                chat_path = None
+            clip_count = int(SETTINGS.get('target_clip_count', 3))
+            print(f"\nScanning for stream moments ({'chat + audio' if chat_path else 'audio only'})...")
+            moment_candidates, vod_seconds, used_chat = detect_moments(audio_path, chat_path, clip_count * 2)
+            print(f"  Scanned {vod_seconds}s of audio{' and chat' if used_chat else ''}: "
+                  f"{len(moment_candidates)} candidate moments")
+            for i, m in enumerate(moment_candidates):
+                print(f"   #{i} @ {format_time(m['peak'])} score {m['score']:.2f}: {m['summary']}")
+            if not moment_candidates:
+                raise Exception("No chat or audio spikes found (the VOD may be silent). Try AI Viral Hooks or Full Video mode.")
+            transcript_text, full_words, whisper_model = transcribe_moment_windows(
+                whisper_model, whisper_tier, audio_path, moment_candidates, whisper_task, os.path.dirname(audio_path))
+            print(f"Transcription complete. Length: {len(transcript_text)} chars")
+            if not transcript_text.strip():
+                transcript_text = "[No dialogue detected in moment windows]"
+        else:
+            try:
                 segments_iter, info = whisper_model.transcribe(audio_path, beam_size=5, word_timestamps=True, task=whisper_task)
                 transcript_text = ""
-                full_words = []
                 for segment in segments_iter:
                     transcript_text += f"[{format_time(segment.start)} - {format_time(segment.end)}] {segment.text.strip()}\n"
                     if segment.words:
@@ -819,17 +1039,34 @@ def run_pipeline():
                                 'end': w.end,
                             })
                 print(f"Detected language: {info.language} (probability: {info.language_probability:.2f})")
-            else:
-                raise w_trans_err
+            except Exception as w_trans_err:
+                if ('cublas' in str(w_trans_err).lower() or 'cuda' in str(w_trans_err).lower()) and whisper_cfg.get('device') == 'cuda':
+                    print(f"  ⚠️ Whisper CUDA execution failed ({w_trans_err}), falling back to CPU (int8)...")
+                    whisper_model = WhisperModel(whisper_tier, device='cpu', compute_type='int8')
+                    segments_iter, info = whisper_model.transcribe(audio_path, beam_size=5, word_timestamps=True, task=whisper_task)
+                    transcript_text = ""
+                    full_words = []
+                    for segment in segments_iter:
+                        transcript_text += f"[{format_time(segment.start)} - {format_time(segment.end)}] {segment.text.strip()}\n"
+                        if segment.words:
+                            for w in segment.words:
+                                full_words.append({
+                                    'word': w.word.strip(),
+                                    'start': w.start,
+                                    'end': w.end,
+                                })
+                    print(f"Detected language: {info.language} (probability: {info.language_probability:.2f})")
+                else:
+                    raise w_trans_err
 
-        print(f"Transcription complete. Length: {len(transcript_text)} chars")
+            print(f"Transcription complete. Length: {len(transcript_text)} chars")
 
-        if not transcript_text.strip():
-            if SETTINGS.get('full_video_mode', False):
-                transcript_text = "[No dialogue detected]"
-                print("  ℹ️ Full video mode: No speech detected in audio track, proceeding with visual render.")
-            else:
-                raise Exception("Transcription produced empty result — audio may have no speech.")
+            if not transcript_text.strip():
+                if SETTINGS.get('full_video_mode', False):
+                    transcript_text = "[No dialogue detected]"
+                    print("  ℹ️ Full video mode: No speech detected in audio track, proceeding with visual render.")
+                else:
+                    raise Exception("Transcription produced empty result — audio may have no speech.")
 
         cursor.execute("UPDATE long_videos SET transcript = %s WHERE id = %s", (transcript_text, VIDEO_ID))
         db.commit()
@@ -869,47 +1106,39 @@ def run_pipeline():
             )
             db.commit()
             print(f"   Inserted 1 full-video clip entry.")
+        elif moments_mode:
+            clip_count = int(SETTINGS.get('target_clip_count', 3))
+            excerpt_chars = sum(len(m.get('excerpt') or '') for m in moment_candidates)
+            picks = None
+            if excerpt_chars < MIN_EXCERPT_CHARS:
+                print(f"\nℹ️ Moment windows have almost no speech ({excerpt_chars} chars); titling from chat/audio signals.")
+            else:
+                print("\nRanking stream moments with Groq LLM (titles & social kit)...")
+                raw_response, groq_err = groq_complete(build_moment_prompt(moment_candidates, clip_count), get_groq_models())
+                if raw_response is None:
+                    print(f"  ⚠️ Groq unavailable ({groq_err}); titling from chat/audio signals.")
+                else:
+                    try:
+                        picks = parse_groq_json_response(raw_response)
+                    except Exception as parse_err:
+                        print(f"  ⚠️ Groq JSON parse warning ({parse_err}); titling from chat/audio signals.")
+
+            chosen = merge_moment_picks(moment_candidates, picks, clip_count)
+            print(f"Selected {len(chosen)} stream moments.")
+            for m, meta in chosen:
+                cursor.execute(
+                    "INSERT INTO video_clips (long_video_id, start_time, end_time, hook_explanation) VALUES (%s, %s, %s, %s)",
+                    (VIDEO_ID, format_seconds_ffmpeg(m['start']), format_seconds_ffmpeg(m['end']),
+                     json.dumps(meta, ensure_ascii=False))
+                )
+            db.commit()
         else:
             print("\nAnalyzing transcript with Groq LLM (Virality Scoring & Social Kit)...")
             clip_count = int(SETTINGS.get('target_clip_count', 3))
             chunks = split_transcript_into_chunks(transcript_text, max_chars=28000)
             per_chunk_count = max(2, clip_count) if len(chunks) > 1 else clip_count
 
-            # Dynamically query active Groq models with preferred fallback order
-            preferred_order = [
-                "openai/gpt-oss-120b",
-                "llama-3.3-70b-versatile",
-                "openai/gpt-oss-20b",
-                "qwen/qwen3.6-27b",
-                "llama-3.1-8b-instant",
-                "qwen/qwen3-32b",
-                "groq/compound",
-                "groq/compound-mini",
-            ]
-            
-            custom_model = os.environ.get("GROQ_MODEL", "").strip()
-            groq_models = []
-            if custom_model:
-                groq_models.append(custom_model)
-
-            try:
-                live_models = client.models.list().data
-                active_chat_ids = [
-                    m.id for m in live_models 
-                    if not any(k in m.id.lower() for k in ['whisper', 'orpheus', 'tts', 'playai', 'guard', 'embedding'])
-                ]
-                for pref in preferred_order:
-                    if pref in active_chat_ids and pref not in groq_models:
-                        groq_models.append(pref)
-                for m_id in active_chat_ids:
-                    if m_id not in groq_models:
-                        groq_models.append(m_id)
-                print(f"  Live Groq models discovered: {len(active_chat_ids)} models available")
-            except Exception as query_err:
-                print(f"  ℹ️ Live model query skipped ({query_err}), using curated active fallback list.")
-                for pref in preferred_order:
-                    if pref not in groq_models:
-                        groq_models.append(pref)
+            groq_models = get_groq_models()
 
             all_candidates = []
             last_error = None
@@ -943,30 +1172,9 @@ Return your answer STRICTLY in JSON format matching this structure without any m
 Transcript:
 {chunk_text}"""
 
-                raw_response = None
-                for model_name in groq_models:
-                    try:
-                        print(f"  Trying model: {model_name}...")
-                        chat_completion = client.chat.completions.create(
-                            messages=[
-                                {
-                                    "role": "system",
-                                    "content": "You are an elite short-form video editor and viral strategist AI. You analyze transcripts, find the most viral moments, score them with precision, and generate high-converting social media copy. Always respond with valid JSON only, no markdown."
-                                },
-                                {
-                                    "role": "user",
-                                    "content": prompt,
-                                }
-                            ],
-                            model=model_name,
-                            temperature=0.3,
-                        )
-                        raw_response = chat_completion.choices[0].message.content
-                        print(f"  Success with model: {model_name}")
-                        break
-                    except Exception as model_err:
-                        last_error = model_err
-                        continue
+                raw_response, chunk_err = groq_complete(prompt, groq_models)
+                if chunk_err is not None:
+                    last_error = chunk_err
 
                 if raw_response is not None:
                     try:

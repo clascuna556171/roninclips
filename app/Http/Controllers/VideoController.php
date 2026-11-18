@@ -94,6 +94,7 @@ class VideoController extends Controller
             'transition_speed' => (float) $request->input('transition_speed', 0.25),
             'target_clip_count' => (int) $request->input('target_clip_count', 5),
             'full_video_mode' => $request->input('processing_mode') === 'full_video',
+            'stream_moments' => $request->input('processing_mode') === 'stream_moments',
             'whisper_model' => $request->input('whisper_model', 'small'),
             'language_mode' => $request->input('language_mode', 'auto'),
             'hardware_accel' => $request->input('hardware_accel', 'auto'),
@@ -227,10 +228,20 @@ class VideoController extends Controller
             $stepIndex = 1;
             $progressPercent = 25;
             $currentStep = 'Transcribing audio locally with Faster-Whisper';
+            // Stream Moments: scan chat + audio first, then transcribe only the moment windows
+            if (preg_match_all('/^\s*📝 Transcribing moment window (\d+\/\d+)/mu', $logContent, $mw)) {
+                $currentStep = 'Transcribing moment window ' . end($mw[1]);
+                $progressPercent = 35;
+            } elseif (str_contains($logContent, 'Scanning for stream moments')) {
+                $currentStep = 'Detecting chat floods and audio spikes';
+                $progressPercent = 30;
+            }
         } elseif ($sLower === 'analyzing') {
             $stepIndex = 2;
             $progressPercent = 50;
-            $currentStep = 'Analyzing transcript with Groq AI for viral hooks';
+            $currentStep = !empty($video->processing_settings['stream_moments'])
+                ? 'Ranking stream moments with Groq AI'
+                : 'Analyzing transcript with Groq AI for viral hooks';
         } elseif ($sLower === 'processing') {
             $stepIndex = 3;
             $progressPercent = 70;
