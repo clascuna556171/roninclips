@@ -70,6 +70,23 @@ test('storing a twitch vod link queues an import with source settings', function
         ->and($video->processing_settings['gaming_layout'])->toBeTrue();
 });
 
+test('clean captions and loudness toggles are saved with the job', function () {
+    $this->post('/videos', [
+        'video_path' => 'https://www.twitch.tv/videos/2612345678',
+        'clean_captions' => '1',
+        'loudness_normalize' => '1',
+    ])->assertRedirect();
+    $settings = LongVideo::sole()->processing_settings;
+    expect($settings['clean_captions'])->toBeTrue()
+        ->and($settings['loudness_normalize'])->toBeTrue();
+
+    LongVideo::query()->delete();
+    $this->post('/videos', ['video_path' => 'https://www.twitch.tv/videos/2612345679'])->assertRedirect();
+    $settings = LongVideo::sole()->processing_settings;
+    expect($settings['clean_captions'])->toBeFalse()
+        ->and($settings['loudness_normalize'])->toBeFalse();
+});
+
 test('storing a kick vod link says chat is not imported', function () {
     $this->post('/videos', [
         'video_path' => 'https://kick.com/somechannel/videos/1a2b3c4d-0000-1111-2222-333344445555',

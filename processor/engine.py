@@ -66,6 +66,8 @@ DEFAULT_SETTINGS = {
     'bgm_path': '',
     'split_screen': False,
     'gaming_layout': False,
+    'clean_captions': False,      # mask swear words in captions (slurs are always masked)
+    'loudness_normalize': True,   # finished clip at -14 LUFS
 }
 
 if __name__ == "__main__" and len(sys.argv) > 2 and sys.argv[2] != '--b64':
@@ -95,7 +97,7 @@ from hw_accel import get_whisper_config, detect_ffmpeg_encoder, get_hardware_sta
 from face_tracker import get_smart_crop_filter, get_video_info
 from effects import detect_volume_spikes, generate_punchin_filter, generate_kenburns_filter
 from emoji_overlay import scan_transcript_for_emojis, generate_emoji_overlay_data
-from audio_mixer import detect_speech_regions, mix_background_music
+from audio_mixer import detect_speech_regions, mix_background_music, normalize_loudness
 from transitions import apply_whip_pan_transitions
 from split_screen import get_split_screen_filter
 from gaming_layout import get_gaming_layout
@@ -837,7 +839,8 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
                     font_family=SETTINGS.get('caption_font', 'Arial Black'),
                     # Gaming layout: captions always sit in the blurred area under the gameplay
                     position='bottom' if use_gaming_layout else SETTINGS.get('caption_position', 'bottom'),
-                    layout_mode=SETTINGS.get('caption_layout', 'two_line')
+                    layout_mode=SETTINGS.get('caption_layout', 'two_line'),
+                    mask_swears=bool(SETTINGS.get('clean_captions'))
                 )
                 print(f"  [Clip #{clip_id}] Generated {num_events} caption events.")
 
@@ -992,6 +995,14 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
                         os.remove(bgm_output)
                 except Exception as bgm_err:
                     print(f"  ⚠️ [Clip #{clip_id}] BGM error: {bgm_err}")
+
+        # ─── Step G.7: Loudness (-14 LUFS), last so it covers the music mix too ───
+        if SETTINGS.get('loudness_normalize', True) and os.path.exists(output_clip):
+            try:
+                if normalize_loudness(output_clip, temp_dir):
+                    print(f"  🔊 [Clip #{clip_id}] Loudness normalised to -14 LUFS")
+            except Exception as loud_err:
+                print(f"  ⚠️ [Clip #{clip_id}] Loudness error: {loud_err}")
 
         # ─── Cleanup temp files for this clip ───
         if ass_path and os.path.exists(ass_path):

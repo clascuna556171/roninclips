@@ -287,6 +287,82 @@ def mix_background_music(clip_video_path, music_path, output_path,
 
 
 # ──────────────────────────────────────────────
+# Loudness normalisation (-14 LUFS, the level TikTok / Shorts / Reels play at)
+# ──────────────────────────────────────────────
+
+TARGET_LUFS = -14
+TARGET_TP = -1.5        # true-peak ceiling, dBTP
+TARGET_LRA = 11
+MIN_INPUT_LUFS = -70.0  # quieter than this is silence: leave it alone
+_LOUDNORM_KEYS = ('input_i', 'input_tp', 'input_lra', 'input_thresh', 'target_offset')
+
+
+def parse_loudnorm_json(stderr_text):
+    """The JSON block ffmpeg's loudnorm prints on its measuring pass, or None."""
+    import json
+    text = stderr_text or ''
+    start, end = text.rfind('{'), text.rfind('}')
+    if start < 0 or end <= start:
+        return None
+    try:
+        data = json.loads(text[start:end + 1])
+    except ValueError:
+        return None
+    if not all(k in data for k in _LOUDNORM_KEYS):
+        return None
+    return data
+
+
+def loudnorm_second_pass_filter(measured, target_i=TARGET_LUFS, target_tp=TARGET_TP, target_lra=TARGET_LRA):
+    """Filter for the second (applying) pass, or None when the audio is silent or unmeasurable."""
+    if not measured:
+        return None
+    try:
+        loudness = float(measured['input_i'])
+        for k in _LOUDNORM_KEYS:
+            float(measured[k])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not loudness > MIN_INPUT_LUFS:   # also catches -inf / nan
+        return None
+    return (f"loudnorm=I={target_i}:TP={target_tp}:LRA={target_lra}:"
+            f"measured_I={measured['input_i']}:measured_TP={measured['input_tp']}:"
+            f"measured_LRA={measured['input_lra']}:measured_thresh={measured['input_thresh']}:"
+            f"offset={measured['target_offset']}:linear=true")
+
+
+def normalize_loudness(clip_path, temp_dir=None):
+    """
+    Bring a finished clip to -14 LUFS in place (video stream copied, audio re-encoded).
+    Two passes: measure, then apply with the measured values so the level is exact
+    and the sound isn't pumped. Returns True when the clip was normalised.
+    """
+    measure = subprocess.run(
+        ['ffmpeg', '-hide_banner', '-nostats', '-i', clip_path, '-vn',
+         '-af', f'loudnorm=I={TARGET_LUFS}:TP={TARGET_TP}:LRA={TARGET_LRA}:print_format=json',
+         '-f', 'null', '-'],
+        capture_output=True, encoding='utf-8', errors='replace')
+    af = loudnorm_second_pass_filter(parse_loudnorm_json(measure.stderr))
+    if not af:
+        print("  [audio_mixer] Loudness: no measurable audio, left as is")
+        return False
+
+    out_dir = temp_dir or os.path.dirname(clip_path)
+    tmp = os.path.join(out_dir, f"loudnorm_{uuid.uuid4().hex[:8]}.mp4")
+    result = subprocess.run(
+        ['ffmpeg', '-i', clip_path, '-map', '0:v?', '-map', '0:a', '-c:v', 'copy',
+         '-af', af, '-ar', '48000', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', tmp, '-y'],
+        capture_output=True, encoding='utf-8', errors='replace')
+    if result.returncode != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
+        print(f"  [audio_mixer] ⚠️ Loudness pass failed: {result.stderr[-300:]}")
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        return False
+    os.replace(tmp, clip_path)
+    return True
+
+
+# ──────────────────────────────────────────────
 # CLI Test Mode
 # ──────────────────────────────────────────────
 

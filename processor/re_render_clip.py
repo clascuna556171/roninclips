@@ -117,7 +117,8 @@ if __name__ == "__main__":
             style_preset=SETTINGS.get('caption_style', 'yellow_pop'),
             font_family=SETTINGS.get('caption_font', 'Arial Black'),
             position=caption_position,
-            layout_mode=SETTINGS.get('caption_layout', 'two_line')
+            layout_mode=SETTINGS.get('caption_layout', 'two_line'),
+            mask_swears=bool(SETTINGS.get('clean_captions'))
         )
 
     use_split_screen = crop_info.get('use_split_screen', False) if crop_info else False
@@ -234,6 +235,14 @@ if __name__ == "__main__":
                     os.remove(temp_audio)
             except Exception as bgm_err:
                 print(f"  ⚠️ [Clip #{CLIP_ID}] BGM re-mix error: {bgm_err}")
+
+    # Loudness (-14 LUFS): the intermediate clip is not normalised, so redo it after every re-render
+    if SETTINGS.get('loudness_normalize', True) and os.path.exists(output_clip):
+        try:
+            from audio_mixer import normalize_loudness
+            normalize_loudness(output_clip, temp_dir)
+        except Exception as loud_err:
+            print(f"  ⚠️ [Clip #{CLIP_ID}] Loudness error: {loud_err}")
 
     if os.path.exists(ass_path):
         try:

@@ -52,7 +52,7 @@ PREF_KEYS = (
     'output_format', 'caption_style', 'caption_font', 'caption_position', 'caption_layout',
     'transition_speed', 'whisper_model', 'language_mode', 'hardware_accel', 'smart_crop',
     'auto_captions', 'punch_in_zoom', 'ken_burns', 'emoji_overlays', 'whip_pan_transitions',
-    'background_music', 'bgm_path', 'split_screen', 'gaming_layout',
+    'background_music', 'bgm_path', 'split_screen', 'gaming_layout', 'clean_captions', 'loudness_normalize',
 )
 
 

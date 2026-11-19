@@ -119,6 +119,8 @@ class VideoController extends Controller
             'bgm_path' => $request->input('bgm_path', ''),
             'split_screen' => $request->boolean('split_screen'),
             'gaming_layout' => $request->boolean('gaming_layout'),
+            'clean_captions' => $request->boolean('clean_captions'),
+            'loudness_normalize' => $request->boolean('loudness_normalize'),
         ];
 
         if ($source) {

@@ -329,6 +329,14 @@
                                         <small>Word-by-word synchronized subtitles</small>
                                     </span>
                                 </label>
+                                <label class="toggle-label" for="clean_captions">
+                                    <input type="checkbox" id="clean_captions" name="clean_captions" value="1" checked class="toggle-checkbox">
+                                    <span class="toggle-status"></span>
+                                    <span class="toggle-text">
+                                        <strong>Clean Captions</strong>
+                                        <small>Swears shown as f*** (slurs are always masked)</small>
+                                    </span>
+                                </label>
                                 <label class="toggle-label" for="punch_in_zoom">
                                     <input type="checkbox" id="punch_in_zoom" name="punch_in_zoom" value="1" class="toggle-checkbox">
                                     <span class="toggle-status"></span>
@@ -386,6 +394,14 @@
                                         </button>
                                     </div>
                                 </div>
+                                <label class="toggle-label" for="loudness_normalize">
+                                    <input type="checkbox" id="loudness_normalize" name="loudness_normalize" value="1" checked class="toggle-checkbox">
+                                    <span class="toggle-status"></span>
+                                    <span class="toggle-text">
+                                        <strong>Even Loudness</strong>
+                                        <small>Every clip at -14 LUFS, the TikTok / Shorts level</small>
+                                    </span>
+                                </label>
                                 <label class="toggle-label" for="split_screen">
                                     <input type="checkbox" id="split_screen" name="split_screen" value="1" class="toggle-checkbox">
                                     <span class="toggle-status"></span>

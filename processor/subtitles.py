@@ -6,6 +6,26 @@ and escapes paths for FFmpeg subtitle filters.
 
 import re
 
+# Whole-word lists (matched against the word without its punctuation), so 'spicy',
+# 'Dickens', 'Scunthorpe' or 'class' are never touched. Slurs are always masked;
+# swears only when the "clean captions" setting is on.
+_SLURS = re.compile(
+    r"nigg(?:a|as|az|er|ers|uh)|n[i1]gg?a[sz]?|faggots?|fags?|retard(?:s|ed)?|trann(?:y|ies)|spics?|kikes?",
+    re.IGNORECASE)
+_SWEARS = re.compile(
+    r"(?:mother)?f+u+c+k\w*|(?:bull|horse)?shit(?:s|ty|ting|ted|head|heads)?|bitch(?:es|ing|y)?|cunts?"
+    r"|dicks?|dickheads?|pussy|pussies|assholes?|bastards?|whores?|sluts?",
+    re.IGNORECASE)
+_WORD_PARTS = re.compile(r"^(\W*)(.*?)(\W*)$", re.DOTALL)
+
+
+def mask_word(word, mask_swears=False):
+    """'fucking,' -> 'f******,' (first letter kept, punctuation kept)."""
+    lead, core, trail = _WORD_PARTS.match(str(word)).groups()
+    if core and (_SLURS.fullmatch(core) or (mask_swears and _SWEARS.fullmatch(core))):
+        core = core[0] + '*' * (len(core) - 1)
+    return lead + core + trail
+
 PALETTES = {
     'yellow_pop': {
         'active_color': '\\c&H00FFFF&',      # Yellow (RGB #FFFF00 -> BGR 00FFFF)
@@ -79,9 +99,10 @@ def ffmpeg_escape_path(path):
 
 def generate_ass_subtitles(words, output_path, output_w=1080, output_h=1920,
                             style_preset='yellow_pop', font_family='Arial Black',
-                            position='bottom', layout_mode='two_line'):
+                            position='bottom', layout_mode='two_line', mask_swears=False):
     """
     Generate an ASS subtitle file with word-by-word highlighting.
+    Slurs are always masked; `mask_swears` also masks swear words.
     """
     style_cfg = PALETTES.get(style_preset, PALETTES['yellow_pop'])
 
@@ -142,7 +163,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
             parts = []
             for j, w in enumerate(chunk):
-                word_text = re.sub(r'[{}\\]', '', str(w.get('word', ''))).strip().upper()
+                word_text = re.sub(r'[{}\\]', '', str(w.get('word', ''))).strip()
+                word_text = mask_word(word_text, mask_swears).upper()
                 if not word_text:
                     continue
 
