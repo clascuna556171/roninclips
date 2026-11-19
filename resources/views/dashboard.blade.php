@@ -12,6 +12,9 @@
     <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300..800;1,400..700&display=swap"></noscript>
     <!-- Local Lucide Icons Bundle (100% Offline Ready) -->
     <script src="{{ asset('js/lucide.min.js') }}"></script>
+    <link rel="icon" href="{{ asset('favicon.ico') }}" sizes="any">
+    <link rel="icon" type="image/svg+xml" href="{{ asset('favicon.svg') }}">
+    <link rel="apple-touch-icon" href="{{ asset('apple-touch-icon.png') }}">
 </head>
 <body>
 

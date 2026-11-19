@@ -22,6 +22,9 @@
         details.db-detail { margin-top: 14px; color: var(--color-text-muted); font-size: 11px; }
         details.db-detail summary { cursor: pointer; }
     </style>
+    <link rel="icon" href="{{ asset('favicon.ico') }}" sizes="any">
+    <link rel="icon" type="image/svg+xml" href="{{ asset('favicon.svg') }}">
+    <link rel="apple-touch-icon" href="{{ asset('apple-touch-icon.png') }}">
 </head>
 <body>
     <main class="db-card" role="main">
