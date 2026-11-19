@@ -31,6 +31,7 @@ KEEP_RATIO = 0.35        # window keeps going while activity stays >= this share
 TAIL_S = 5               # extra seconds after activity drops
 CHAT_FLOOR = 0.5         # msgs/s: minimum spread so a quiet chat's +1 msg isn't a "spike"
 AUDIO_FLOOR_DB = 1.0
+SILENCE_DB = -50.0       # quieter seconds (muted intro / BRB) are left out of the audio baseline
 AUDIO_RATE = 8000        # Hz, plenty for loudness
 
 _PUNCT_RE = re.compile(r"[^\w\s]+", re.UNICODE)
@@ -99,25 +100,37 @@ def smooth(x, width):
     return np.convolve(padded, np.ones(width) / width, mode='valid')
 
 
+def baseline_values(win, ignore_below=None):
+    """The part of a window that counts toward a baseline (drops silence when asked)."""
+    if ignore_below is None:
+        return win
+    return win[win >= ignore_below]
+
+
 def rolling_zscore(x, floor, rel_floor=0.0, baseline_s=BASELINE_S, gap_s=BASELINE_GAP_S,
-                   min_baseline_s=MIN_BASELINE_S):
+                   min_baseline_s=MIN_BASELINE_S, ignore_below=None):
     """
     How far each second sits above its preceding baseline, in robust z units
     (median / 1.4826*MAD). Only upward spikes count: result is clipped to [0, Z_CAP].
     `floor` is the minimum spread, so flat signals don't explode; `rel_floor` adds a
     minimum spread proportional to the baseline (for counts, not for dB).
+    `ignore_below` leaves values under it out of the baseline, so talking after a
+    silent stretch isn't scored against the silence.
     """
     x = np.asarray(x, dtype=float)
     n = len(x)
     z = np.zeros(n, dtype=float)
     if n == 0:
         return z
-    g_med = float(np.median(x))
-    g_mad = float(np.median(np.abs(x - g_med)))
+    g_vals = baseline_values(x, ignore_below)
+    if len(g_vals) == 0:
+        g_vals = x
+    g_med = float(np.median(g_vals))
+    g_mad = float(np.median(np.abs(g_vals - g_med)))
     for t in range(n):
         lo, hi = max(0, t - baseline_s), max(0, t - gap_s)
-        if hi - lo >= min_baseline_s:
-            win = x[lo:hi]
+        win = baseline_values(x[lo:hi], ignore_below)
+        if len(win) >= min_baseline_s:
             med = float(np.median(win))
             mad = float(np.median(np.abs(win - med)))
         else:
@@ -238,7 +251,10 @@ def detect_moments_from_signals(loudness_db, messages, count):
         return []
 
     audio_s = smooth(loud, AUDIO_SMOOTH_S)
-    audio_z = rolling_zscore(audio_s, AUDIO_FLOOR_DB)
+    audio_z = rolling_zscore(audio_s, AUDIO_FLOOR_DB, ignore_below=SILENCE_DB)
+    heard = baseline_values(audio_s, SILENCE_DB)
+    if len(heard) == 0:
+        heard = audio_s
 
     chat_z = raw_counts = chat_s = None
     has_chat = bool(messages)
@@ -254,7 +270,8 @@ def detect_moments_from_signals(loudness_db, messages, count):
     for peak in pick_peaks(score, count):
         start, end = clip_window(score_s, peak, duration)
         lo, hi = max(0, peak - BASELINE_S), max(0, peak - BASELINE_GAP_S)
-        base_db = float(np.median(audio_s[lo:hi])) if hi > lo else float(np.median(audio_s))
+        base_win = baseline_values(audio_s[lo:hi], SILENCE_DB)
+        base_db = float(np.median(base_win)) if len(base_win) else float(np.median(heard))
         m = {
             'peak': float(peak),
             'start': start,

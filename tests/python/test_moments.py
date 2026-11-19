@@ -166,6 +166,29 @@ class TestDetector(unittest.TestCase):
         self.assertIsNone(found[0]['chat_msgs_10s'])
         self.assertTrue(found[0]['summary'].startswith('Audio peak'))
 
+    def test_talk_after_silent_intro_is_not_a_spike(self):
+        # "Starting soon" screen with no audio, then normal talking, then a real scream
+        loud = synthetic_loudness(1200)
+        loud[:300] = -120.0            # digital silence
+        loud[900:903] += 12
+        found = detect_moments_from_signals(loud, None, 1)
+        self.assertLessEqual(abs(found[0]['peak'] - 901), 4)
+        self.assertLess(found[0]['audio_db_above'], 20)
+
+    def test_silence_is_left_out_of_the_baseline(self):
+        x = np.full(400, -30.0)
+        x[:200] = -120.0
+        z = rolling_zscore(x, floor=1.0, ignore_below=moments.SILENCE_DB)
+        self.assertEqual(z[200:].max(), 0.0)              # talking resumes: no spike
+        self.assertEqual(rolling_zscore(x, floor=1.0)[200], moments.Z_CAP)  # old behaviour
+        x[300] = -10.0
+        z = rolling_zscore(x, floor=1.0, ignore_below=moments.SILENCE_DB)
+        self.assertEqual(z[300], moments.Z_CAP)           # a real spike still counts
+
+    def test_all_silent_audio_does_not_crash(self):
+        z = rolling_zscore(np.full(100, -120.0), floor=1.0, ignore_below=moments.SILENCE_DB)
+        self.assertEqual(z.max(), 0.0)
+
     def test_empty_inputs(self):
         self.assertEqual(detect_moments_from_signals([], None, 3), [])
         self.assertEqual(detect_moments_from_signals(synthetic_loudness(100), None, 0), [])
