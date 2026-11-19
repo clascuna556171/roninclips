@@ -26,6 +26,14 @@ KICK_VOD_RE = re.compile(
 
 # Cap downloads at 1080p: source-quality 10-hour VODs can run to tens of GB.
 VIDEO_FORMAT = 'bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b'
+# Sparse (watchlist) mode: scan an audio-only copy, then fetch only the clip windows.
+AUDIO_FORMAT = 'ba/bestaudio'
+# Clip windows must come from ONE playlist: Twitch's audio-only and video playlists can sit ~10 s apart,
+# so merging them (bv+ba) would put the sound out of sync. Twitch video formats already carry audio.
+SECTION_FORMAT = 'b[height<=1080]/b'
+SECTION_PAD_S = 15          # Twitch cuts snap to ~10 s segments; pad so the window is always inside
+ALIGN_RATE = 8000           # Hz used to match a section's sound against the scanned audio
+ALIGN_MIN_MATCH = 0.5       # below this the sound match is not trusted
 DISK_MARGIN = 1.2                       # need estimated size + 20%
 FALLBACK_BITRATE_BPS = 8_000_000        # used when yt-dlp can't estimate size
 PROGRESS_PREFIX = 'RC_PROGRESS'
@@ -126,14 +134,14 @@ def check_disk_space(target_dir, needed_bytes, disk_usage=shutil.disk_usage):
 
 # ─── yt-dlp ──────────────────────────────────────────────────────────────────
 
-def _ytdlp_base():
-    return [sys.executable, '-m', 'yt_dlp', '--no-playlist', '--no-warnings', '-f', VIDEO_FORMAT]
+def _ytdlp_base(fmt=VIDEO_FORMAT):
+    return [sys.executable, '-m', 'yt_dlp', '--no-playlist', '--no-warnings', '-f', fmt]
 
 
-def probe(url, platform):
+def probe(url, platform, fmt=VIDEO_FORMAT):
     """Fetch metadata (title, duration, size) without downloading."""
     try:
-        proc = subprocess.run(_ytdlp_base() + ['-J', url], capture_output=True, stdin=subprocess.DEVNULL, text=True,
+        proc = subprocess.run(_ytdlp_base(fmt) + ['-J', url], capture_output=True, stdin=subprocess.DEVNULL, text=True,
                               encoding='utf-8', errors='replace', timeout=180)
     except FileNotFoundError:
         raise VodImportError("yt-dlp is not installed. Run: pip install \"yt-dlp[default,curl-cffi]\"")
@@ -171,8 +179,8 @@ def parse_progress_line(line):
     }
 
 
-def format_progress(p):
-    text = f"Downloading VOD: {p['percent']:.1f}%"
+def format_progress(p, label='VOD'):
+    text = f"Downloading {label}: {p['percent']:.1f}%"
     if p['size']:
         text += f" of {p['size']}"
     if p['speed']:
@@ -182,16 +190,16 @@ def format_progress(p):
     return text
 
 
-def download_video(url, out_dir, platform, log=_log):
-    """Download the VOD into out_dir/vod.mp4 with live progress lines. Resumes .part files."""
+def download_video(url, out_dir, platform, log=_log, fmt=VIDEO_FORMAT, name='vod', label='VOD'):
+    """Download the VOD into out_dir/{name}.mp4 with live progress lines. Resumes .part files."""
     template = (f"download:{PROGRESS_PREFIX} %(progress._percent_str)s|%(progress._total_bytes_str)s|"
                 f"%(progress._total_bytes_estimate_str)s|%(progress._speed_str)s|%(progress._eta_str)s")
-    cmd = _ytdlp_base() + [
+    cmd = _ytdlp_base(fmt) + [
         '--newline', '--progress-template', template,
         '--retries', '10', '--fragment-retries', '10', '--continue',
         '--concurrent-fragments', '4',
         '--merge-output-format', 'mp4', '--remux-video', 'mp4',
-        '-o', os.path.join(out_dir, 'vod.%(ext)s'),
+        '-o', os.path.join(out_dir, f'{name}.%(ext)s'),
         url,
     ]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
@@ -205,7 +213,7 @@ def download_video(url, out_dir, platform, log=_log):
             now = time.time()
             # Throttle: every whole percent or every 10 s, so 10-hour logs stay small.
             if p['percent'] >= 100 or p['percent'] - last_pct >= 1 or now - last_time >= 10:
-                log(format_progress(p))
+                log(format_progress(p, label))
                 last_pct, last_time = p['percent'], now
             continue
         if line:
@@ -216,7 +224,7 @@ def download_video(url, out_dir, platform, log=_log):
     proc.wait()
     if proc.returncode != 0:
         raise VodImportError(friendly_error('\n'.join(tail), platform))
-    path = os.path.join(out_dir, 'vod.mp4')
+    path = os.path.join(out_dir, f'{name}.mp4')
     if not os.path.exists(path):
         raise VodImportError("Download finished but the video file is missing. Press Retry.")
     return path
@@ -334,6 +342,28 @@ def download_twitch_chat(vod_id, out_dir, log=_log):
 
 # ─── Orchestration ───────────────────────────────────────────────────────────
 
+def fetch_chat(platform, vod_id, out_dir, log=_log, without='the video'):
+    """Download (or reuse) the chat log. Returns (status, path, count); status is saved/failed/unavailable."""
+    chat_path = os.path.join(out_dir, 'chat.jsonl')
+    if platform == 'kick':
+        log("Kick chat: not available (Kick has no reliable chat-replay source). Video only.")
+        return 'unavailable', chat_path, None
+    if os.path.exists(chat_path):
+        with open(chat_path, encoding='utf-8') as f:
+            chat_count = sum(1 for _ in f)
+        log(f"Downloading chat: already saved ({chat_count} messages), skipping.")
+        return 'saved', chat_path, chat_count
+    log("Downloading chat log from Twitch...")
+    try:
+        chat_path, chat_count = download_twitch_chat(vod_id, out_dir, log)
+        log(f"Chat saved: {chat_count} messages -> {chat_path}")
+        return 'saved', chat_path, chat_count
+    except VodImportError as e:
+        log(f"⚠️ CHAT WARNING: {e} Continuing with {without} only.")
+    except (OSError, ValueError) as e:
+        log(f"⚠️ CHAT WARNING: chat log could not be saved ({e}). Continuing with {without} only.")
+    return 'failed', chat_path, None
+
 def import_vod(video_id, url, storage_app=None, log=_log):
     """
     Download a VOD (and Twitch chat) for long_videos.id = video_id.
@@ -372,27 +402,7 @@ def import_vod(video_id, url, storage_app=None, log=_log):
             json.dump(meta, f, ensure_ascii=False, indent=2)
         log(f"Downloading VOD: 100.0% done ({os.path.getsize(video_path) / 1e9:.2f} GB)")
 
-    chat_path = os.path.join(out_dir, 'chat.jsonl')
-    chat_status, chat_count = 'unavailable', None
-    if platform == 'kick':
-        log("Kick chat: not available (Kick has no reliable chat-replay source). Video only.")
-    elif os.path.exists(chat_path):
-        with open(chat_path, encoding='utf-8') as f:
-            chat_count = sum(1 for _ in f)
-        chat_status = 'saved'
-        log(f"Downloading chat: already saved ({chat_count} messages), skipping.")
-    else:
-        log("Downloading chat log from Twitch...")
-        try:
-            chat_path, chat_count = download_twitch_chat(vod_id, out_dir, log)
-            chat_status = 'saved'
-            log(f"Chat saved: {chat_count} messages -> {chat_path}")
-        except VodImportError as e:
-            chat_status = 'failed'
-            log(f"⚠️ CHAT WARNING: {e} Continuing with the video only.")
-        except (OSError, ValueError) as e:
-            chat_status = 'failed'
-            log(f"⚠️ CHAT WARNING: chat log could not be saved ({e}). Continuing with the video only.")
+    chat_status, chat_path, chat_count = fetch_chat(platform, vod_id, out_dir, log)
 
     return {
         'path': video_path,
@@ -403,3 +413,228 @@ def import_vod(video_id, url, storage_app=None, log=_log):
         'chat_path': chat_path if chat_status == 'saved' else None,
         'chat_count': chat_count,
     }
+
+
+# ─── Sparse import (watchlist): scan audio + chat, then fetch only the clip windows ──────────
+
+def _save_meta(meta_path, meta):
+    with open(meta_path, 'w', encoding='utf-8') as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+
+
+def import_vod_sparse(video_id, url, storage_app=None, log=_log):
+    """
+    Download what moment detection needs, not the video: the audio-only stream (~1.5 GB for 16 h
+    instead of ~47 GB at 1080p60) and the Twitch chat log. If the audio-only stream can't be had,
+    fall back to chat alone. Safe to re-run: finished files are reused.
+    Returns dict(path (audio file or None), title, duration, platform, vod_id, audio_status,
+    chat_status, chat_path, chat_count).
+    """
+    parsed = parse_source_url(url)
+    if not parsed:
+        raise VodImportError("Unsupported link. Paste a Twitch VOD (twitch.tv/videos/…) or Kick VOD link.")
+    platform, vod_id = parsed
+    out_dir = vod_dir(video_id, storage_app)
+    os.makedirs(out_dir, exist_ok=True)
+    meta_path = os.path.join(out_dir, 'meta.json')
+    meta = {}
+    if os.path.exists(meta_path):
+        with open(meta_path, encoding='utf-8') as f:
+            meta = json.load(f)
+
+    audio_path = os.path.join(out_dir, 'audio.mp4')
+    audio_status = 'saved'
+    if meta.get('audio_complete') and os.path.exists(audio_path):
+        log(f"Downloading audio: already downloaded ({os.path.getsize(audio_path) / 1e9:.2f} GB), skipping.")
+    else:
+        log(f"Importing {platform.title()} VOD {vod_id}: reading info (sparse: audio + chat first)...")
+        try:
+            info = probe(url, platform, AUDIO_FORMAT)
+            meta.update({'title': info.get('title') or f'{platform}_{vod_id}',
+                         'duration': info.get('duration'), 'uploader': info.get('uploader')})
+            est = estimate_size_bytes(info)
+            free, _ = check_disk_space(out_dir, est)
+            log(f"Title: {meta['title']} | duration {int(meta['duration'] or 0) // 60} min | "
+                f"audio-only scan copy ~{est / 1e9:.1f} GB, {free / 1e9:.0f} GB free")
+            log("Downloading audio: 0.0%")
+            download_video(url, out_dir, platform, log, fmt=AUDIO_FORMAT, name='audio', label='audio')
+            meta['source_start_offset'] = normalize_start(audio_path, log)
+            meta['audio_complete'] = True
+            _save_meta(meta_path, meta)
+            log(f"Downloading audio: 100.0% done ({os.path.getsize(audio_path) / 1e9:.2f} GB)")
+        except VodImportError as e:
+            audio_status = 'failed'
+            audio_path = None
+            log(f"⚠️ AUDIO WARNING: {e} Falling back to chat-only detection.")
+            if not meta.get('duration'):
+                info = probe(url, platform)  # raises if the VOD itself is gone
+                meta.update({'title': info.get('title') or f'{platform}_{vod_id}',
+                             'duration': info.get('duration'), 'uploader': info.get('uploader')})
+                _save_meta(meta_path, meta)
+
+    chat_status, chat_path, chat_count = fetch_chat(platform, vod_id, out_dir, log, without='the audio')
+    if not audio_path and chat_status != 'saved':
+        raise VodImportError("Neither the audio nor the chat of this VOD could be downloaded, "
+                             "so there is nothing to scan for moments.")
+
+    return {
+        'path': audio_path,
+        'title': meta.get('title') or f'{platform}_{vod_id}',
+        'duration': meta.get('duration'),
+        'platform': platform,
+        'vod_id': vod_id,
+        'audio_status': audio_status,
+        'chat_status': chat_status,
+        'chat_path': chat_path if chat_status == 'saved' else None,
+        'chat_count': chat_count,
+    }
+
+
+def section_bounds(start, end, duration=None, pad=SECTION_PAD_S):
+    """Whole-second window to request: the clip plus `pad` each side, clamped to the VOD."""
+    lo = max(0, int(start) - pad)
+    hi = int(end + 0.999) + pad
+    if duration:
+        hi = min(hi, int(duration + 0.999))
+    return lo, max(hi, lo + 1)
+
+
+def download_section(url, out_dir, name, start, end, platform, log=_log):
+    """Download [start, end] seconds of the VOD at up to 1080p into out_dir/{name}.mp4."""
+    path = os.path.join(out_dir, f'{name}.mp4')
+    cmd = _ytdlp_base(SECTION_FORMAT) + [
+        '--download-sections', f'*{int(start)}-{int(end)}', '--force-overwrites',
+        '--retries', '10', '--fragment-retries', '10',
+        '--merge-output-format', 'mp4', '--remux-video', 'mp4',
+        '-o', os.path.join(out_dir, f'{name}.%(ext)s'), url,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, stdin=subprocess.DEVNULL, text=True,
+                              encoding='utf-8', errors='replace', timeout=1800)
+    except subprocess.TimeoutExpired:
+        raise VodImportError("Timed out downloading the clip window. Check your connection and press Retry.")
+    if proc.returncode != 0 or not os.path.exists(path):
+        raise VodImportError(friendly_error((proc.stderr or '') + '\n' + (proc.stdout or ''), platform))
+    return path
+
+
+def decode_pcm(path, start=None, duration=None, rate=ALIGN_RATE):
+    """Mono float PCM of a media file (or part of it). Input seeking is sample-accurate when decoding."""
+    import numpy as np
+    cmd = ['ffmpeg', '-v', 'error']
+    if start is not None:
+        cmd += ['-ss', f'{max(0.0, start):.3f}']
+    cmd += ['-i', path]
+    if duration is not None:
+        cmd += ['-t', f'{duration:.3f}']
+    cmd += ['-vn', '-ac', '1', '-ar', str(rate), '-f', 's16le', '-']
+    out =subprocess.run(cmd, capture_output=True, stdin=subprocess.DEVNULL, timeout=900).stdout
+    return np.frombuffer(out[:len(out) - len(out) % 2], dtype='<i2').astype(np.float64)
+
+
+def find_offset(probe, ref, rate=ALIGN_RATE):
+    """
+    Where `probe` (a short sound snippet) best matches inside `ref`.
+    Returns (offset_seconds, match) with match in [-1, 1] (normalized cross-correlation).
+    """
+    import numpy as np
+    probe = np.asarray(probe, dtype=np.float64)
+    ref = np.asarray(ref, dtype=np.float64)
+    n, m = len(probe), len(ref)
+    if n == 0 or m < n:
+        return 0.0, 0.0
+    probe = probe - probe.mean()
+    p_norm = np.linalg.norm(probe)
+    if p_norm == 0:
+        return 0.0, 0.0
+    size = 1 << int(np.ceil(np.log2(n + m)))
+    corr = np.fft.irfft(np.fft.rfft(ref, size) * np.conj(np.fft.rfft(probe, size)), size)[:m - n + 1]
+    # Per-lag norm of the ref window (mean-removed), from running sums
+    c1 = np.concatenate(([0.0], np.cumsum(ref)))
+    c2 = np.concatenate(([0.0], np.cumsum(ref * ref)))
+    win_sum = c1[n:] - c1[:-n]
+    win_sq = c2[n:] - c2[:-n]
+    win_var = np.maximum(win_sq - win_sum * win_sum / n, 0.0)
+    # corr against a mean-removed probe equals corr against the mean-removed window
+    norm = np.sqrt(win_var) * p_norm
+    with np.errstate(divide='ignore', invalid='ignore'):
+        score = np.where(norm > 1e-9, corr / norm, 0.0)
+    lag = int(np.argmax(score))
+    return lag / rate, float(score[lag])
+
+
+def align_section(section_path, audio_path, requested_start, search_s=25.0, probe_skip=2.0, probe_len=20.0,
+                  rate=ALIGN_RATE):
+    """
+    Find where a downloaded section really starts in VOD time by matching its sound against the
+    audio-only copy that moment detection used. Twitch cuts snap to segment boundaries and its
+    playlists can sit ~10 s apart, so `requested_start` is only a guess.
+    Returns (start_seconds, match). When the match is weak (silence, muted parts) the guess is returned.
+    """
+    probe = decode_pcm(section_path, probe_skip, probe_len, rate)
+    ref_start = max(0.0, requested_start - search_s)
+    ref = decode_pcm(audio_path, ref_start, (requested_start - ref_start) + search_s + probe_skip + probe_len, rate)
+    lag, match = find_offset(probe, ref, rate)
+    if match < ALIGN_MIN_MATCH:
+        return float(requested_start), match
+    return ref_start + lag - probe_skip, match
+
+
+def fetch_clip_source(url, platform, out_dir, key, clip_start, clip_end, audio_path=None, duration=None, log=_log):
+    """
+    Download one clip window (padded) and work out its true VOD start.
+    Returns (path, source_offset): VOD time t sits at (t - source_offset) inside the file.
+    """
+    lo, hi = section_bounds(clip_start, clip_end, duration)
+    path = download_section(url, out_dir, f'section_{key}', lo, hi, platform, log)
+    if not audio_path or not os.path.exists(audio_path):
+        log(f"  ⚠️ No audio copy to line the window up with; trusting the requested start "
+            f"(may be off by up to ~10 s).")
+        return path, float(lo)
+    start, match = align_section(path, audio_path, lo)
+    if match < ALIGN_MIN_MATCH:
+        log(f"  ⚠️ Could not line up the clip window by sound (match {match:.2f}); trusting the requested start.")
+    else:
+        log(f"  🎯 Clip window lined up by sound: starts at {start:.2f}s (asked {lo}s, match {match:.2f})")
+    # The window must still cover the clip; if alignment says it doesn't, that's a real problem
+    real_end = start + probe_duration(path)
+    if start > clip_start + 0.5 or real_end < clip_end - 0.5:
+        raise VodImportError(f"The downloaded clip window ({start:.1f}-{real_end:.1f}s) doesn't cover "
+                             f"the moment ({clip_start:.1f}-{clip_end:.1f}s).")
+    return path, start
+
+
+def probe_duration(path):
+    try:
+        out = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                              '-of', 'default=nw=1:nk=1', path], capture_output=True, text=True,
+                             stdin=subprocess.DEVNULL, timeout=60).stdout.strip()
+        return float(out)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return 0.0
+
+
+def cleanup_sparse_files(video_id, storage_app=None):
+    """Delete the audio copy and clip windows once clips are rendered. Chat and meta stay (tiny, re-scannable)."""
+    out_dir = vod_dir(video_id, storage_app)
+    if not os.path.isdir(out_dir):
+        return 0
+    freed = 0
+    for name in os.listdir(out_dir):
+        if name.startswith(('audio.', 'section_')) or name.endswith('.part'):
+            p = os.path.join(out_dir, name)
+            try:
+                freed += os.path.getsize(p)
+                os.remove(p)
+            except OSError:
+                pass
+    meta_path = os.path.join(out_dir, 'meta.json')
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, encoding='utf-8') as f:
+                meta = json.load(f)
+            meta['audio_complete'] = False
+            _save_meta(meta_path, meta)
+        except (OSError, ValueError):
+            pass
+    return freed

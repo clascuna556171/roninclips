@@ -22,9 +22,15 @@ class VideoController extends Controller
         return 'python';
     }
 
-    public function index()
+    public function index(Request $request)
     {
-        $videos = LongVideo::with('clips')->latest()->get();
+        \App\Support\Watcher::ensureRunning();
+
+        // Watchlist jobs live on the Watchlist page. `?video=ID` opens one here for the editing tools.
+        $focusId = $request->integer('video') ?: null;
+        $videos = LongVideo::with('clips')->latest()->get()
+            ->filter(fn ($v) => $focusId ? $v->id === $focusId : empty($v->processing_settings['watchlist']))
+            ->values();
         $dbDriver = config('database.default', 'sqlite');
         $groqModel = config('services.groq.model', 'openai/gpt-oss-120b');
         $apiKeys = [
@@ -39,7 +45,7 @@ class VideoController extends Controller
         });
 
         return view('dashboard', compact(
-            'videos', 'dbDriver', 'groqModel', 'apiKeys', 'hwBadge', 'activeJobsCount', 'totalClipsCount'
+            'videos', 'dbDriver', 'groqModel', 'apiKeys', 'hwBadge', 'activeJobsCount', 'totalClipsCount', 'focusId'
         ));
     }
 
@@ -272,7 +278,7 @@ class VideoController extends Controller
             if ($importError) {
                 $currentStep = 'Import failed: ' . $importError;
             }
-        } elseif (preg_match_all('/^(Importing \w+ VOD .+|Downloading VOD: .+|Downloading chat log.*)$/m', $logContent, $dl)) {
+        } elseif (preg_match_all('/^(Importing \w+ VOD .+|Downloading (?:VOD|audio): .+|Downloading chat log.*)$/m', $logContent, $dl)) {
             // Link import in progress (status stays 'pending' until the download finishes)
             $last = trim(end($dl[1]));
             $currentStep = $last;
@@ -282,8 +288,11 @@ class VideoController extends Controller
             } elseif (str_starts_with($last, 'Downloading chat')) {
                 $progressPercent = 20;
                 $currentStep = 'Downloading Twitch chat log';
-            } elseif (preg_match('/Downloading VOD: ([\d.]+)%/', $last, $pm)) {
-                $progressPercent = (int) round(2 + min(100, (float) $pm[1]) * 0.18);
+            } elseif (preg_match('/Downloading (VOD|audio): ([\d.]+)%/', $last, $pm)) {
+                $progressPercent = (int) round(2 + min(100, (float) $pm[2]) * 0.18);
+                if ($pm[1] === 'audio') {
+                    $currentStep = 'Downloading audio for the moment scan: ' . substr($last, strlen('Downloading audio: '));
+                }
             } else {
                 $progressPercent = 20;
             }

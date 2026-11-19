@@ -96,14 +96,18 @@ roninclips/
 │   ├── Http/
 │   │   └── Controllers/
 │   │       ├── ApiKeyController.php       # Tests and saves the Groq / Gemini keys pasted in the dashboard
+│   │       ├── WatchlistController.php    # Twitch Watchlist page: follow/pause/unfollow channels, VOD queue, clips, status JSON
 │   │       ├── Controller.php             # Base abstract controller
 │   │       └── VideoController.php        # Core backend controller (ingestion, logs, re-rendering, deletion, file picker)
 │   ├── Support/
 │   │   ├── DatabaseOffline.php            # Recognises DB-down/not-migrated errors for the friendly 503 page
-│   │   └── EnvFile.php                    # Reads, writes and masks single .env keys
+│   │   ├── EnvFile.php                    # Reads, writes and masks single .env keys
+│   │   └── Watcher.php                    # Is the watchlist watcher running (heartbeat), start it, ask it to check now
 │   ├── Models/
 │   │   ├── LongVideo.php                  # Eloquent Model for `long_videos` table (casts processing_settings)
 │   │   ├── VideoClip.php                  # Eloquent Model for `video_clips` table (belongsTo LongVideo)
+│   │   ├── WatchChannel.php               # Followed Twitch channel (`watch_channels`)
+│   │   ├── WatchVod.php                   # A VOD the watcher has seen: queued/processing/done/failed/skipped (`watch_vods`)
 │   │   └── User.php                       # Default Laravel User authentication model
 │   └── Providers/
 │       └── AppServiceProvider.php         # Application service container boots & bindings
@@ -132,7 +136,8 @@ roninclips/
 │   │   ├── 0001_01_01_000002_create_jobs_table.php
 │   │   ├── 2026_06_29_173953_create_long_videos_table.php     # Creates `long_videos` table
 │   │   ├── 2026_06_29_174003_create_video_clips_table.php    # Creates `video_clips` table
-│   │   └── 2026_06_30_165400_add_processing_settings_to_long_videos.php # Adds JSON settings column
+│   │   ├── 2026_06_30_165400_add_processing_settings_to_long_videos.php # Adds JSON settings column
+│   │   └── 2026_11_19_120000_create_watchlist_tables.php # `watch_channels` + `watch_vods`
 │   └── seeders/                           # Database seeders
 │
 ├── 📁 processor/                          # Python AI & Media Processing Subsystem
@@ -147,7 +152,8 @@ roninclips/
 │   ├── emoji_overlay.py                   # Transcript keyword scanner & PIL/FFmpeg animated emoji overlays
 │   ├── transitions.py                     # Scene change detector & FFmpeg whip-pan transition generator
 │   ├── split_screen.py                    # Two-speaker podcast layout detector & split-screen compositor
-│   ├── vod_import.py                      # Twitch/Kick VOD link import: yt-dlp download + Twitch chat → chat.jsonl
+│   ├── vod_import.py                      # Twitch/Kick VOD link import: yt-dlp download + Twitch chat → chat.jsonl; sparse mode (audio + chat, then clip windows lined up by sound)
+│   ├── watchlist.py                       # Background watcher: hourly channel checks, queue, runs engine.py in sparse mode one VOD at a time
 │   ├── moments.py                         # Stream Moments: chat-flood + audio-spike detection → clip windows
 │   ├── re_render_clip.py                  # Standalone transcript subtitle & BGM re-render executor
 │   └── models/
@@ -180,6 +186,7 @@ roninclips/
 │   │   └── app.js                         # JavaScript entry
 │   └── views/
 │       ├── dashboard.blade.php            # Primary monolithic dashboard view (Form, Terminal, Editor, Gallery)
+│       ├── watchlist.blade.php            # Twitch Watchlist page (watcher status, channels, VOD queue, clips)
 │       └── welcome.blade.php              # Legacy welcome view
 │
 ├── 📁 routes/                             # Application Routing
@@ -202,7 +209,7 @@ roninclips/
 
 | File | Type | Primary Role & Description |
 | :--- | :--- | :--- |
-| [`routes/web.php`](routes/web.php) | Route Config | Declares web endpoints: `GET /` (Dashboard), `POST /videos` (Process video), `POST /videos/{video}/retry` (1-click job retry), `GET /videos/{id}/logs` (Live log polling), `DELETE /videos/{video}` (Delete video & clips), `DELETE /clips/{clip}` (Delete single clip), `POST /clips/{clip}/explorer` (Reveal file in Windows Explorer), `GET /clips/{clip}/transcript` (Get word JSON), `GET /clips/{clip}/status` (Status polling), `POST /clips/{clip}/re-render` (Re-render clip with edited words), `POST /settings/api-keys` (Test and save the Groq / Gemini keys). |
+| [`routes/web.php`](routes/web.php) | Route Config | Declares web endpoints: `GET /` (Dashboard), `POST /videos` (Process video), `POST /videos/{video}/retry` (1-click job retry), `GET /videos/{id}/logs` (Live log polling), `DELETE /videos/{video}` (Delete video & clips), `DELETE /clips/{clip}` (Delete single clip), `POST /clips/{clip}/explorer` (Reveal file in Windows Explorer), `GET /clips/{clip}/transcript` (Get word JSON), `GET /clips/{clip}/status` (Status polling), `POST /clips/{clip}/re-render` (Re-render clip with edited words), `POST /settings/api-keys` (Test and save the Groq / Gemini keys), `GET /watchlist` (Watchlist page), `GET /watchlist/status` (watcher status JSON), `POST /watchlist/channels`, `POST /watchlist/channels/{channel}/toggle`, `DELETE /watchlist/channels/{channel}`, `POST /watchlist/check`, `POST /watchlist/vods/{vod}/retry`. `GET /?video=ID` shows one (watchlist) job on the dashboard. |
 | [`app/Http/Controllers/VideoController.php`](app/Http/Controllers/VideoController.php) | PHP Controller | Handles video path validation, parsing of 16 strategy settings, database record creation, and detached background process execution (`pclose(popen('start /B cmd /c ...'))` on Windows). Streams engine logs, manages artifact cleanup (`cleanupClipFiles`), and orchestrates transcript re-rendering. |
 | [`app/Models/LongVideo.php`](app/Models/LongVideo.php) | Eloquent Model | Represents uploaded source videos in `long_videos` table. Automatically casts `processing_settings` to array and defines `clips()` 1:N relationship. |
 | [`resources/views/dashboard.blade.php`](resources/views/dashboard.blade.php) | Blade Template | Studio-grade Two-Column Creator Workspace featuring: (1) Top System HUD with live GPU CUDA/CPU badge, Groq LLM model, database driver, and active job indicators, (2) Sticky Left Sidebar with Ingestion dropzone, Native Windows File Picker, Strategy Presets, and Collapsible Settings with live Subtitle Preview Simulator, (3) Right Main Canvas with multi-step live progress tracking, console logs, and Master Clip Gallery, (4) Hover-to-Play Video Scrubbing with 1-click Download & Copy Post actions, (5) Cinema Lightbox Modal with Safe-Zone overlays (TikTok, Reels, Shorts) and Social Media Posting Kit. |
@@ -220,6 +227,8 @@ roninclips/
 | [`processor/split_screen.py`](processor/split_screen.py) | **Podcast Split-Screen** | Analyzes face positions across video frames to identify two primary speakers (Left Zone and Right Zone). Generates dual-crop FFmpeg filter complex that stacks the two speakers into a vertical 9:16 top/bottom composition. |
 | [`processor/vod_import.py`](processor/vod_import.py) | **VOD Link Import** | Recognises Twitch/Kick VOD links, checks disk space, downloads with yt-dlp (1080p cap, retries, resume) and logs progress for the dashboard. Fetches Twitch chat via TwitchDownloaderCLI and normalises it to `storage/app/vods/{id}/chat.jsonl` (`t`, `author`, `message`). Kick is video only. Expected failures raise `VodImportError` with a plain message. |
 | [`processor/moments.py`](processor/moments.py) | **Stream Moments** | Builds per-second chat activity (from `chat.jsonl`, emote spam counted double) and loudness (FFmpeg PCM stream, constant memory). Scores each against its own rolling 2-minute baseline (median/MAD, upward only, capped), combines 60% chat (shifted 3s earlier) + 40% audio, picks peaks ≥90s apart and returns adaptive windows (start 15s before the peak, follow the score while it stays ≥35% of the peak, +5s tail, 30–60s) with a one-line reason. Audio-only when there is no chat. `engine.py` then transcribes only those windows and asks Groq to title and re-rank them, falling back to signal-based metadata. |
+| [`processor/watchlist.py`](processor/watchlist.py) | **Twitch Watchlist** | Started by the dashboard (`App\Support\Watcher`), single instance via an OS file lock, heartbeat in `storage/app/watchlist/heartbeat.json`. Checks enabled channels on start and hourly (`yt-dlp --flat-playlist`), asks Twitch whether the newest VOD is still recording (`live_status`), queues new VODs (first check: newest only), and runs each, newest first, as a `long_videos` job with `sparse_download` + `stream_moments` + 3 clips, copying caption/crop prefs from the latest dashboard Stream Moments job. Interrupted runs are re-queued. |
+| `vod_import.py` sparse mode | **Watchlist downloads** | `import_vod_sparse()` downloads the audio-only stream + chat (falls back to chat only). After moments are picked, `fetch_clip_source()` downloads each window padded ±15s from one playlist (`b[height<=1080]`), then `align_section()` finds its true VOD start by cross-correlating its sound with the audio copy (Twitch snaps cuts to ~10s and its playlists can differ by ~10s). `render_single_clip` seeks inside that window via `_src_path`/`_src_offset`. `cleanup_sparse_files()` deletes audio + windows after rendering. |
 | [`processor/audio_mixer.py`](processor/audio_mixer.py) | **BGM & Auto-Ducking** | Analyzes speech regions via audio RMS energy calculation using concurrency-safe UUID temp files. Generates dynamic volume envelopes (`volume='if(between(t,...), 0.12, 0.40)':eval=frame`) to duck background music during dialogue and boost music during pauses. |
 | [`processor/effects.py`](processor/effects.py) | **Motion FX & Punch-In** | Detects audio volume spikes (moments of vocal excitement/climax) using sliding RMS energy windows. Generates scale-and-crop zoom filters (1.15x punch-in) or Ken Burns slow zoom (1.0x to 1.05x). Avoids buggy `zoompan` filter to preserve full framerate. |
 | [`processor/emoji_overlay.py`](processor/emoji_overlay.py) | **Animated Emojis** | Scans transcript words against an extensive keyword dictionary (e.g. fire, money, shock, brain, danger). Renders high-res emoji PNGs via Pillow and creates timed FFmpeg overlay filter complex commands with subtle scale/pop animations. |

@@ -89,8 +89,8 @@ client = Groq(api_key=os.environ.get("GROQ_API_KEY", ""))
 # Import local modules
 sys.path.insert(0, os.path.dirname(__file__))
 from db_helper import get_db, DatabaseUnavailable
-from vod_import import import_vod, VodImportError
-from moments import detect_moments
+from vod_import import import_vod, import_vod_sparse, fetch_clip_source, cleanup_sparse_files, VodImportError
+from moments import detect_moments, detect_moments_from_signals, load_chat
 from hw_accel import get_whisper_config, detect_ffmpeg_encoder, get_hardware_status
 from face_tracker import get_smart_crop_filter, get_video_info
 from effects import detect_volume_spikes, generate_punchin_filter, generate_kenburns_filter
@@ -602,9 +602,16 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
         # ─── Step A: Extract clean intermediate clip ───
         intermediate_clip = os.path.join(temp_dir, f"intermediate_{clip_id}.mp4")
         print(f"  📦 [Clip #{clip_id}] Extracting intermediate clip...")
-        
+
+        # Sparse (watchlist) clips come from their own downloaded window, which starts at
+        # VOD time `_src_offset`; seek within that file instead of the full VOD.
+        source_path = sc.get('_src_path') or video['storage_path']
+        src_offset = float(sc.get('_src_offset') or 0.0)
+        seek_start_str = format_seconds_ffmpeg(max(0.0, clip_start - src_offset))
+        seek_end_str = format_seconds_ffmpeg(max(0.0, clip_end - src_offset))
+
         intermediate_result = run_ffmpeg([
-            'ffmpeg', '-i', video['storage_path'], '-ss', clip_start_str, '-t', clip_duration_str,
+            'ffmpeg', '-i', source_path, '-ss', seek_start_str, '-t', clip_duration_str,
             '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '128k',
             '-avoid_negative_ts', 'make_zero', '-async', '1',
             intermediate_clip, '-y'
@@ -613,7 +620,7 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
             # Fallback: try input seeking
             print(f"  ⚠️ [Clip #{clip_id}] Output seeking failed, trying input seeking fallback...")
             run_ffmpeg([
-                'ffmpeg', '-ss', clip_start_str, '-to', clip_end_str, '-i', video['storage_path'],
+                'ffmpeg', '-ss', seek_start_str, '-to', seek_end_str, '-i', source_path,
                 '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '128k',
                 '-avoid_negative_ts', 'make_zero',
                 intermediate_clip, '-y'
@@ -1077,7 +1084,14 @@ def run_pipeline():
             except Exception as e:
                 print(f"Warning: Could not parse DB settings: {e}")
 
-        # 1b. Link import: download a Twitch/Kick VOD (+ Twitch chat) before the normal pipeline
+        # 1b. Link import: download a Twitch/Kick VOD (+ Twitch chat) before the normal pipeline.
+        # Sparse mode (watchlist): download audio + chat only, then just the picked clip windows.
+        sparse = bool(SETTINGS.get('sparse_download')) and bool(SETTINGS.get('source_url'))
+        if sparse:
+            SETTINGS['stream_moments'] = True
+            SETTINGS['full_video_mode'] = False
+        chat_only = False
+        vod_duration = None
         if SETTINGS.get('source_url'):
             try:
                 stored_settings = json.loads(video.get('processing_settings') or '{}')
@@ -1085,7 +1099,10 @@ def run_pipeline():
                 stored_settings = {}
             stored_settings.pop('import_error', None)
             try:
-                imported = import_vod(VIDEO_ID, SETTINGS['source_url'])
+                if sparse:
+                    imported = import_vod_sparse(VIDEO_ID, SETTINGS['source_url'])
+                else:
+                    imported = import_vod(VIDEO_ID, SETTINGS['source_url'])
             except VodImportError as imp_err:
                 print(f"\nIMPORT ERROR: {imp_err}")
                 stored_settings['import_error'] = str(imp_err)
@@ -1098,13 +1115,21 @@ def run_pipeline():
                 'chat_path': imported['chat_path'],
                 'chat_count': imported['chat_count'],
             })
-            title = imported['title'][:180]
+            if sparse:
+                stored_settings['audio_status'] = imported['audio_status']
+                # Keep the watchlist's "Channel · title" name; only fill in a generic one
+                title = (video.get('filename') or '') if stored_settings.get('watchlist') else ''
+                title = (title or imported['title'])[:180]
+            else:
+                title = imported['title'][:180]
             cursor.execute("UPDATE long_videos SET storage_path = %s, filename = %s, processing_settings = %s WHERE id = %s",
-                           (imported['path'], title, json.dumps(stored_settings), VIDEO_ID))
+                           (imported['path'] or '', title, json.dumps(stored_settings), VIDEO_ID))
             db.commit()
-            video['storage_path'] = imported['path']
+            video['storage_path'] = imported['path'] or ''
             video['filename'] = title
             SETTINGS['chat_path'] = imported['chat_path']
+            vod_duration = imported.get('duration')
+            chat_only = sparse and not imported['path']
 
         # Detect hardware configuration
         hw_pref = SETTINGS.get('hardware_accel', 'auto')
@@ -1123,14 +1148,18 @@ def run_pipeline():
         audio_path = os.path.abspath(audio_path)
         os.makedirs(os.path.dirname(audio_path), exist_ok=True)
 
-        print(f"\nExtracting audio from: {video['storage_path']}")
-        result = run_ffmpeg([
-            'ffmpeg', '-i', video['storage_path'], '-b:a', '64k', '-ac', '1', '-ar', '16000', '-map', 'a', audio_path, '-y'
-        ])
-        if not os.path.exists(audio_path):
-            raise Exception(f"FFmpeg failed to extract audio. stderr: {result.stderr[-500:]}")
+        if chat_only:
+            print("\nNo audio copy (chat-only fallback): moments come from chat alone; "
+                  "each clip is transcribed after its window is downloaded.")
+        else:
+            print(f"\nExtracting audio from: {video['storage_path']}")
+            result = run_ffmpeg([
+                'ffmpeg', '-i', video['storage_path'], '-b:a', '64k', '-ac', '1', '-ar', '16000', '-map', 'a', audio_path, '-y'
+            ])
+            if not os.path.exists(audio_path):
+                raise Exception(f"FFmpeg failed to extract audio. stderr: {result.stderr[-500:]}")
 
-        print(f"Audio extracted: {os.path.getsize(audio_path) / 1024:.0f} KB")
+            print(f"Audio extracted: {os.path.getsize(audio_path) / 1024:.0f} KB")
 
         # 3. Transcribe Locally with Faster-Whisper
         whisper_tier = SETTINGS.get('whisper_model', 'small').lower().strip()
@@ -1160,16 +1189,30 @@ def run_pipeline():
                 print(f"  ⚠️ Chat log not found at {chat_path}; using audio only.")
                 chat_path = None
             clip_count = int(SETTINGS.get('target_clip_count', 3))
-            print(f"\nScanning for stream moments ({'chat + audio' if chat_path else 'audio only'})...")
-            moment_candidates, vod_seconds, used_chat = detect_moments(audio_path, chat_path, clip_count * 2)
-            print(f"  Scanned {vod_seconds}s of audio{' and chat' if used_chat else ''}: "
-                  f"{len(moment_candidates)} candidate moments")
+            if chat_only:
+                if not chat_path or not vod_duration:
+                    raise Exception("Chat-only fallback needs the chat log and the VOD length, and one is missing.")
+                print(f"\nScanning for stream moments (chat only, no audio pass)...")
+                # Flat loudness = no audio spikes, so the score is chat alone
+                moment_candidates = detect_moments_from_signals(
+                    [-60.0] * int(vod_duration), load_chat(chat_path), clip_count * 2)
+                vod_seconds, used_chat = int(vod_duration), True
+            else:
+                print(f"\nScanning for stream moments ({'chat + audio' if chat_path else 'audio only'})...")
+                moment_candidates, vod_seconds, used_chat = detect_moments(audio_path, chat_path, clip_count * 2)
+            print(f"  Scanned {vod_seconds}s of {'chat' if chat_only else 'audio'}"
+                  f"{' and chat' if used_chat and not chat_only else ''}: {len(moment_candidates)} candidate moments")
             for i, m in enumerate(moment_candidates):
                 print(f"   #{i} @ {format_time(m['peak'])} score {m['score']:.2f}: {m['summary']}")
             if not moment_candidates:
                 raise Exception("No chat or audio spikes found (the VOD may be silent). Try AI Viral Hooks or Full Video mode.")
-            transcript_text, full_words, whisper_model = transcribe_moment_windows(
-                whisper_model, whisper_tier, audio_path, moment_candidates, whisper_task, os.path.dirname(audio_path))
+            if chat_only:
+                transcript_text = ''
+                for m in moment_candidates:
+                    m['excerpt'] = ''
+            else:
+                transcript_text, full_words, whisper_model = transcribe_moment_windows(
+                    whisper_model, whisper_tier, audio_path, moment_candidates, whisper_task, os.path.dirname(audio_path))
             print(f"Transcription complete. Length: {len(transcript_text)} chars")
             if not transcript_text.strip():
                 transcript_text = "[No dialogue detected in moment windows]"
@@ -1374,7 +1417,32 @@ Transcript:
         temp_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'storage/app'))
         os.makedirs(output_dir, exist_ok=True)
 
-        src_width, src_height, src_fps = get_video_info(video['storage_path'])
+        if sparse:
+            # Fetch only the picked windows at 1080p, each lined up by sound against the scanned audio
+            vod_out_dir = os.path.join(temp_dir, 'vods', str(VIDEO_ID))
+            ready_clips = []
+            for i, sc in enumerate(saved_clips):
+                c_start = parse_time_to_seconds(sc['start_time'])
+                c_end = parse_time_to_seconds(sc['end_time'])
+                print(f"\nDownloading clip window {i + 1}/{len(saved_clips)} "
+                      f"({format_time(c_start)}-{format_time(c_end)}, 1080p)...")
+                try:
+                    src_path, src_offset = fetch_clip_source(
+                        SETTINGS['source_url'], SETTINGS.get('source_platform', 'twitch'), vod_out_dir, sc['id'],
+                        c_start, c_end, audio_path=video['storage_path'] or None, duration=vod_duration)
+                except VodImportError as sec_err:
+                    print(f"  ❌ Clip window {i + 1} could not be downloaded, dropping this clip: {sec_err}")
+                    cursor.execute("DELETE FROM video_clips WHERE id = %s", (sc['id'],))
+                    db.commit()
+                    continue
+                sc['_src_path'], sc['_src_offset'] = src_path, src_offset
+                ready_clips.append(sc)
+            if not ready_clips:
+                raise Exception("None of the clip windows could be downloaded from Twitch.")
+            saved_clips = ready_clips
+            src_width, src_height, src_fps = get_video_info(saved_clips[0]['_src_path'])
+        else:
+            src_width, src_height, src_fps = get_video_info(video['storage_path'])
         print(f"\nSource video: {src_width}x{src_height} @ {src_fps:.1f}fps")
         print(f"Total clips to render: {len(saved_clips)}")
 
@@ -1392,6 +1460,9 @@ Transcript:
 
         cursor.execute("UPDATE long_videos SET status = 'completed' WHERE id = %s", (VIDEO_ID,))
         db.commit()
+        if sparse:
+            freed = cleanup_sparse_files(VIDEO_ID)
+            print(f"🧹 Deleted the audio copy and clip windows ({freed / 1e9:.2f} GB). Chat log kept.")
         print("\n🎉 Pipeline completed successfully!")
 
     except Exception as e:

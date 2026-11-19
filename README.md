@@ -135,6 +135,14 @@ Ensure the following tools are installed on your system:
 - Saved keys are only ever shown masked (`gsk_••••abcd`). **Remove** clears one key. The panel opens by itself, and the model badge reads **NO AI KEY**, when no key is set.
 - **Gemini backup:** the engine tries every Groq model first. Gemini is used only when they all fail (outage, rate limit) or no Groq key is set. The progress bar then reads *Gemini AI (backup)*. Set `GEMINI_MODEL` in `.env` to pin a model.
 
+### 11. 📡 Twitch Watchlist (auto-clip followed channels)
+- Open **[ TWITCH WATCHLIST ]** in the sidebar (`/watchlist`) and follow channels by name or link (`kaicenat`, `twitch.tv/jasontheween`).
+- While RoninClips is open, a background watcher (`processor/watchlist.py`) checks every channel when it starts and then **every hour** with yt-dlp (no API key). It runs new VODs one at a time, **newest first**, through Stream Moments and keeps the **3 best clips** per VOD. Twitch keeps VODs for at least 7 days, so VODs from while the PC was off are caught up.
+- **Downloads only what it needs.** Instead of the full VOD (~47 GB for 16 h at 1080p60), it downloads the audio-only stream (~1.5 GB) and the chat log, finds the moments, then downloads just those clip windows at 1080p. Twitch cuts windows on ~10 s boundaries, so each window is padded and lined up to the exact second by matching its sound against the audio copy. The audio and windows are deleted after rendering; the chat log is kept. If the audio-only stream is unavailable, moments come from chat alone.
+- When you follow a channel, only its **newest** VOD is clipped. Older VODs are skipped, and every new one after that is clipped. A VOD that is still recording (the streamer is live) is left until the stream ends. VODs under 5 minutes are skipped.
+- Clips use the caption, crop and layout settings of your latest Stream Moments job from the dashboard. They appear on the Watchlist page; **EDIT** opens that job on the dashboard for subtitle and facecam editing. Watchlist jobs are otherwise kept off the dashboard.
+- The watcher starts by itself when you open the dashboard or the Watchlist page (if you follow at least one enabled channel), runs only once at a time, and logs to `storage/logs/watchlist.log`. If the app or PC shuts down mid-VOD, that VOD runs again next time. **CHECK NOW** checks immediately; failed VODs have **RETRY**.
+
 ---
 
 ## ⚙️ Environment Configuration (`.env`)
@@ -214,7 +222,7 @@ Then run: `php artisan migrate`
 
 ## 🛣️ Roadmap (planned, not built yet)
 
-- **Twitch watchlist:** follow channels. When your PC is on, RoninClips checks hourly for new VODs (yt-dlp, no API key) and runs Stream Moments on them, newest first, so clips are waiting for you. Twitch keeps VODs for at least 7 days, so time with the PC off is caught up later.
+- **Always-on scanner:** run the light part of the watchlist (chat + audio scan) on an always-on machine or free cloud scheduler, so moments are found while the PC is off and the PC only renders.
 - **Twitch live clipping:** while a followed streamer is live, read chat anonymously over Twitch IRC, record a rolling ~10-minute buffer with Streamlink + FFmpeg, and cut and caption a clip within a minute or two of each spike. VODs already clipped live are skipped by the watchlist.
 
 ---

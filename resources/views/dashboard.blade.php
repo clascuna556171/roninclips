@@ -70,6 +70,12 @@
                 @endif
             </div>
 
+            <a href="{{ route('watchlist') }}" class="nav-link-row">
+                <i data-lucide="radio-tower" class="icon-sm"></i>
+                <span>[ TWITCH WATCHLIST ]</span>
+                <span class="nav-link-hint">Auto-clips followed channels →</span>
+            </a>
+
             <!-- API keys: Groq (main) + Gemini (backup), saved to .env -->
             <details class="settings-panel api-keys-panel" id="api-keys-panel" @if(!$hasGroqKey && !$hasGeminiKey) open @endif>
                 <summary class="settings-header">
@@ -438,6 +444,16 @@
 
         <!-- ─── Right Main Canvas ─── -->
         <main class="studio-canvas">
+
+            @if($focusId ?? null)
+                <div class="focus-bar">
+                    <span><i data-lucide="radio-tower" class="icon-sm"></i> Showing one watchlist job so you can preview, edit subtitles or adjust the facecam.</span>
+                    <span class="focus-bar-links">
+                        <a href="{{ route('watchlist') }}">← Back to Watchlist</a>
+                        <a href="{{ route('dashboard') }}">Show all dashboard videos</a>
+                    </span>
+                </div>
+            @endif
 
             @if($videos->isEmpty())
                 <div class="empty-state-box">
