@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
 
 import numpy as np
 
+import live_clips
 import vod_import
 import watchlist
 from vod_import import VodImportError, find_offset, section_bounds, cleanup_sparse_files
@@ -273,6 +274,92 @@ class TestWatchlistDb(unittest.TestCase):
         row = self.rows("SELECT * FROM watch_vods WHERE vod_id = '888'")[0]
         self.assertEqual((row['status'], row['error']), ('failed', 'Import failed: VOD deleted'))
         cleanup.assert_called_once()
+
+
+class TestLiveMoments(TestWatchlistDb.__base__):
+    """process_live_moment: chat flood -> wait for the live VOD -> download window -> one-clip job."""
+    AT = 1_795_000_000
+
+    setUp = TestWatchlistDb.setUp
+    rows = TestWatchlistDb.rows
+
+    def tearDown(self):
+        self.queue_patch.stop()
+        TestWatchlistDb.tearDown(self)
+
+    def queue(self, **moment):
+        self.queue_patch = mock.patch.object(live_clips, 'QUEUE_PATH', os.path.join(self.dir, 'live_moments.json'))
+        self.queue_patch.start()
+        m = live_clips.add_moment('kaicenat', {'at': self.AT, 'rate': 12.0, 'baseline': 3.0, 'z': 8.0})
+        if moment:
+            live_clips.update_moment(m['id'], **moment)
+            m.update(moment)
+        return m
+
+    def stored(self):
+        return live_clips.load_queue()[0]
+
+    def run_moment(self, m, timing, now, download=None, engine_status='completed'):
+        def engine(video_id, heartbeat):
+            c = watchlist.get_db()
+            c.cursor().execute("UPDATE long_videos SET status = %s WHERE id = %s", (engine_status, video_id))
+            c.commit()
+            c.close()
+            return ''
+        with mock.patch.object(watchlist, 'list_channel_vods', return_value=[vod(900)]), \
+                mock.patch.object(watchlist, 'vod_timing', return_value=timing), \
+                mock.patch.object(watchlist, 'download_live_section', **(download or {'return_value': 'D:/x/live.mp4'})) as dl, \
+                mock.patch.object(watchlist, 'run_engine', side_effect=engine), \
+                mock.patch.object(watchlist, 'vod_dir', return_value=self.dir), \
+                mock.patch.object(watchlist.time, 'time', return_value=now):
+            worked = watchlist.process_live_moment(self.db, m, mock.MagicMock())
+        return worked, dl
+
+    def test_waits_while_the_vod_is_behind(self):
+        m = self.queue()
+        worked, dl = self.run_moment(m, (self.AT - 3600, 3605), now=self.AT + 40)
+        self.assertFalse(worked)
+        dl.assert_not_called()
+        self.assertEqual(self.stored()['status'], 'waiting')
+        self.assertEqual(self.stored()['next_try'], self.AT + 40 + live_clips.RETRY_S)
+        self.assertEqual(self.rows("SELECT COUNT(*) AS n FROM long_videos")[0]['n'], 0)
+
+    def test_ready_moment_becomes_a_one_clip_job_with_dashboard_prefs(self):
+        cur = self.db.cursor()
+        cur.execute("INSERT INTO long_videos (filename, storage_path, status, processing_settings) VALUES ('a', 'x', 'completed', %s)",
+                    (json.dumps({'stream_moments': True, 'caption_style': 'cyber_pink'}),))
+        self.db.commit()
+        m = self.queue()
+        worked, dl = self.run_moment(m, (self.AT - 3600, 3700), now=self.AT + 120)
+        self.assertTrue(worked)
+        self.assertEqual(dl.call_args[0][3:5], (3600 - live_clips.PRE_S, 3600 + live_clips.POST_S))
+        job = self.rows("SELECT * FROM long_videos ORDER BY id DESC LIMIT 1")[0]
+        settings = json.loads(job['processing_settings'])
+        self.assertEqual(job['storage_path'], 'D:/x/live.mp4')
+        self.assertTrue(job['filename'].startswith('kaicenat · LIVE chat spike'))
+        self.assertTrue(settings['full_video_mode'])
+        self.assertEqual(settings['caption_style'], 'cyber_pink')
+        self.assertEqual((self.stored()['status'], self.stored()['long_video_id']), ('done', job['id']))
+
+    def test_download_failure_retries_then_fails_without_empty_jobs(self):
+        m = self.queue()
+        broken = {'side_effect': watchlist.VodImportError('Download failed: ffmpeg exited')}
+        for i in range(live_clips.DOWNLOAD_TRIES):
+            self.run_moment(self.stored(), (self.AT - 3600, 3700), now=self.AT + 120 + i * 60, download=broken)
+        self.assertEqual(self.stored()['status'], 'failed')
+        self.assertIn('ffmpeg', self.stored()['error'])
+        self.assertEqual(self.rows("SELECT COUNT(*) AS n FROM long_videos")[0]['n'], 0)
+
+    def test_moment_outside_the_saved_vod_is_dropped(self):
+        m = self.queue()
+        worked, dl = self.run_moment(m, (self.AT + 600, 100), now=self.AT + 800)
+        self.assertFalse(worked)
+        self.assertEqual(self.stored()['status'], 'failed')
+
+    def test_engine_failure_is_recorded(self):
+        m = self.queue()
+        self.run_moment(m, (self.AT - 3600, 3700), now=self.AT + 120, engine_status='failed')
+        self.assertEqual(self.stored()['status'], 'failed')
 
 
 # ─── Sparse download helpers ──────────────────────────────────────────────────

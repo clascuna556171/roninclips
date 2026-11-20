@@ -518,6 +518,82 @@ def download_section(url, out_dir, name, start, end, platform, log=_log):
     return path
 
 
+# ─── Window from a VOD that is still recording ───────────────────────────────
+# While a stream is live its VOD playlist has no end marker, so ffmpeg (and yt-dlp's
+# --download-sections) treat it as a live stream: they start at the live edge and can't
+# seek back. Instead read the playlist, fetch only the segments covering the window, and trim.
+
+def parse_hls_playlist(text):
+    """([{uri, start, duration}], ended) from a media playlist; start is seconds into the VOD."""
+    segments, offset, duration = [], 0.0, None
+    for line in (text or '').splitlines():
+        line = line.strip()
+        if line.startswith('#EXTINF:'):
+            try:
+                duration = float(line[8:].split(',', 1)[0])
+            except ValueError:
+                duration = None
+        elif line and not line.startswith('#') and duration is not None:
+            segments.append({'uri': line, 'start': offset, 'duration': duration})
+            offset += duration
+            duration = None
+    return segments, '#EXT-X-ENDLIST' in (text or '')
+
+
+def pick_segments(segments, start, end):
+    """Segments overlapping [start, end] and how far into the first one the window begins.
+    Nothing when the playlist doesn't reach `end` yet."""
+    if not segments or segments[-1]['start'] + segments[-1]['duration'] < end:
+        return [], 0.0
+    picked = [s for s in segments if s['start'] + s['duration'] > start and s['start'] < end]
+    return picked, (start - picked[0]['start']) if picked else 0.0
+
+
+def _http_get(url, timeout=30):
+    import urllib.request
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+def download_live_section(url, out_dir, name, start, end, platform='twitch', log=_log, fetch=_http_get):
+    """Download [start, end] seconds of a VOD that may still be recording into out_dir/{name}.mp4."""
+    try:
+        proc = subprocess.run(_ytdlp_base(SECTION_FORMAT) + ['-g', url], capture_output=True, stdin=subprocess.DEVNULL,
+                              text=True, encoding='utf-8', errors='replace', timeout=120)
+    except subprocess.TimeoutExpired:
+        raise VodImportError("Timed out reading the VOD's stream address.")
+    playlist_url = proc.stdout.strip().splitlines()[-1] if proc.returncode == 0 and proc.stdout.strip() else ''
+    if not playlist_url.startswith('http'):
+        raise VodImportError(friendly_error(proc.stderr or '', platform))
+
+    import urllib.error
+    import urllib.parse
+    try:
+        segments, _ = parse_hls_playlist(fetch(playlist_url).decode('utf-8', 'replace'))
+        picked, trim = pick_segments(segments, start, end)
+        if not picked:
+            raise VodImportError("The VOD hasn't recorded this part yet.")
+        joined = os.path.join(out_dir, f'{name}.ts.part')
+        with open(joined, 'wb') as f:
+            for seg in picked:
+                f.write(fetch(urllib.parse.urljoin(playlist_url, seg['uri'])))
+    except (urllib.error.URLError, OSError, TimeoutError) as e:
+        raise VodImportError(f"Download failed: {e}")
+
+    path = os.path.join(out_dir, f'{name}.mp4')
+    result = subprocess.run(['ffmpeg', '-v', 'error', '-y', '-ss', f'{trim:.3f}', '-i', joined, '-t', f'{end - start:.3f}',
+                             '-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-movflags', '+faststart', path],
+                            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=300)
+    try:
+        os.remove(joined)
+    except OSError:
+        pass
+    if result.returncode != 0 or not os.path.exists(path):
+        raise VodImportError(f"Could not cut the clip window: {result.stderr.strip()[-300:]}")
+    return path
+
+
 def decode_pcm(path, start=None, duration=None, rate=ALIGN_RATE):
     """Mono float PCM of a media file (or part of it). Input seeking is sample-accurate when decoding."""
     import numpy as np

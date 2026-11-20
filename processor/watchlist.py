@@ -29,7 +29,8 @@ if sys.platform == 'win32':
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from db_helper import get_db, DatabaseUnavailable  # noqa: E402
-from vod_import import cleanup_sparse_files  # noqa: E402
+from vod_import import VodImportError, cleanup_sparse_files, download_live_section, vod_dir  # noqa: E402
+import live_clips  # noqa: E402
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 STATE_DIR = os.path.join(ROOT_DIR, 'storage', 'app', 'watchlist')
@@ -141,6 +142,22 @@ def build_settings(base, login, vod_id):
     return settings
 
 
+def live_settings(base, login, vod_id, offset_s):
+    """A live moment: one clip rendered from the already-downloaded window (no VOD import)."""
+    settings = {k: base[k] for k in PREF_KEYS if k in base}
+    settings.update({
+        'full_video_mode': True,
+        'stream_moments': False,
+        'sparse_download': False,
+        'watchlist': True,
+        'live_clip': True,
+        'watch_channel': login,
+        'live_vod_url': vod_url(vod_id),
+        'live_vod_offset_s': int(offset_s),
+    })
+    return settings
+
+
 def failure_reason(log_text, settings):
     """One line for the watchlist page, from the engine's own messages."""
     if settings.get('import_error'):
@@ -184,6 +201,21 @@ def vod_is_recording(vod_id):
     if status in ('was_live', 'not_live', 'post_live'):
         return False
     return None
+
+
+def vod_timing(vod_id):
+    """(start epoch, seconds recorded so far) for a VOD, or None if Twitch didn't say."""
+    try:
+        proc = _ytdlp(['--skip-download', '-f', 'ba/b', '--print', '%(timestamp)s|%(duration)s', vod_url(vod_id)],
+                      timeout=90)
+    except subprocess.TimeoutExpired:
+        return None
+    lines = proc.stdout.strip().splitlines() if proc.returncode == 0 else []
+    try:
+        ts, dur = lines[-1].split('|')
+        return int(float(ts)), int(float(dur))
+    except (IndexError, ValueError):
+        return None
 
 
 # ─── Heartbeat & single instance ─────────────────────────────────────────────
@@ -377,6 +409,94 @@ def process_vod(db, wv, heartbeat):
     log(f"  -> {status}{': ' + error if error else ''}")
 
 
+def process_live_moment(db, m, heartbeat):
+    """Turn one queued chat flood into a dashboard clip, or push it back until the VOD catches up."""
+    now = time.time()
+    login = m['login']
+    try:
+        listed = list_channel_vods(login)
+    except (RuntimeError, subprocess.TimeoutExpired) as e:
+        listed, list_err = [], str(e)
+    else:
+        list_err = None
+    timing = vod_timing(listed[0]['id']) if listed else None
+    if timing is None:
+        if now - m['at'] > live_clips.GIVE_UP_S:
+            live_clips.update_moment(m['id'], status='failed',
+                                     error=f"No VOD found for this stream{': ' + list_err if list_err else ''}.")
+        else:
+            live_clips.update_moment(m['id'], next_try=now + live_clips.RETRY_S)
+        return False
+    vod_id = listed[0]['id']
+    plan = live_clips.plan_moment(m, timing[0], timing[1], now)
+    if plan[0] == 'wait':
+        live_clips.update_moment(m['id'], next_try=now + live_clips.RETRY_S)
+        return False
+    if plan[0] == 'missing':
+        live_clips.update_moment(m['id'], status='failed', error=plan[1])
+        log(f"Live moment {login} @ {datetime.fromtimestamp(m['at']).strftime('%H:%M:%S')} dropped: {plan[1]}")
+        return False
+
+    _, start_s, end_s = plan
+    stamp = datetime.fromtimestamp(m['at']).strftime('%b %d %H:%M')
+    heartbeat.beat(state='processing', current={'vod_id': vod_id, 'channel': login,
+                                                'title': f'Live chat spike {stamp}', 'long_video_id': None})
+    log(f"Live moment {login} @ {stamp}: cutting {start_s}-{end_s}s of VOD {vod_id}...")
+    # Download before creating the dashboard job, so a failed try leaves no empty job behind.
+    # Twitch sometimes drops a live VOD download mid-way; a later try usually works.
+    out_dir = vod_dir(f"live_{m['id']}")
+    os.makedirs(out_dir, exist_ok=True)
+    try:
+        path = download_live_section(vod_url(vod_id), out_dir, "live", start_s, end_s, "twitch", log=log)
+    except VodImportError as e:
+        tries = m.get('download_tries', 0) + 1
+        if tries < live_clips.DOWNLOAD_TRIES:
+            live_clips.update_moment(m['id'], download_tries=tries, next_try=time.time() + live_clips.RETRY_S)
+            log(f"  -> download failed ({e}); trying again in {live_clips.RETRY_S}s")
+        else:
+            live_clips.update_moment(m['id'], status='failed', error=f'Download failed: {e}'[:300])
+            log(f"  -> failed: {e}")
+        return True
+
+    cur = db.cursor()
+    cur.execute("SELECT processing_settings FROM long_videos ORDER BY id DESC LIMIT 50")
+    base = pick_base_settings([r['processing_settings'] for r in cur.fetchall()])
+    settings = live_settings(base, login, vod_id, start_s)
+    name = f"{login} · LIVE chat spike {stamp}"[:180]
+    ts = utc_now_str()
+    cur.execute("INSERT INTO long_videos (filename, storage_path, status, processing_settings, created_at, updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s)", (name, path, 'pending', json.dumps(settings), ts, ts))
+    db.commit()
+    video_id = cur.lastrowid
+    live_clips.update_moment(m['id'], status='processing', long_video_id=video_id, vod_id=vod_id)
+    heartbeat.beat(current={'vod_id': vod_id, 'channel': login,
+                            'title': f'Live chat spike {stamp}', 'long_video_id': video_id})
+    log(f"  rendering as job #{video_id}...")
+
+    log_text = run_engine(video_id, heartbeat)
+    db_after = get_db()
+    try:
+        c2 = db_after.cursor()
+        c2.execute("SELECT status FROM long_videos WHERE id = %s", (video_id,))
+        row = c2.fetchone()
+    finally:
+        db_after.close()
+    if row and row['status'] == 'completed':
+        live_clips.update_moment(m['id'], status='done', error=None)
+        log("  -> done")
+    else:
+        err = failure_reason(log_text, {}) if row else 'The dashboard job was deleted while it ran.'
+        live_clips.update_moment(m['id'], status='failed', error=err)
+        log(f"  -> failed: {err}")
+    return True
+
+
+def sync_live_channels(db, listener):
+    cur = db.cursor()
+    cur.execute("SELECT login FROM watch_channels WHERE enabled = 1")
+    listener.set_channels([r['login'] for r in cur.fetchall()])
+
+
 # ─── Main loop ───────────────────────────────────────────────────────────────
 
 def main():
@@ -388,6 +508,10 @@ def main():
     heartbeat = Heartbeat()
     heartbeat.beat(state='starting')
     log(f"Watchlist watcher started (pid {os.getpid()}). Checking hourly; {CLIPS_PER_VOD} clips per VOD.")
+    if live_clips.requeue_interrupted():
+        log("Re-queued live moment(s) interrupted last time.")
+    listener = live_clips.ChatListener(on_spike=live_clips.add_moment, log=log)
+    listener.start()
     last_check = 0.0
     recovered = False
     while True:
@@ -397,6 +521,11 @@ def main():
                 if not recovered:
                     recover_interrupted(db)
                     recovered = True
+                sync_live_channels(db, listener)
+                heartbeat.beat(live_chat=dict(listener.status))
+                due = live_clips.next_due_moment(time.time())
+                if due and process_live_moment(db, due, heartbeat):
+                    continue
                 forced = os.path.exists(CHECK_NOW_PATH)
                 if forced or time.time() - last_check >= CHECK_INTERVAL_S:
                     if forced:
