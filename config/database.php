@@ -38,9 +38,11 @@ return [
             'database' => env('DB_DATABASE', database_path('database.sqlite')),
             'prefix' => '',
             'foreign_key_constraints' => env('DB_FOREIGN_KEYS', true),
-            'busy_timeout' => null,
-            'journal_mode' => null,
-            'synchronous' => null,
+            // The engine and watcher write to the same file while the dashboard reads it:
+            // WAL lets them run side by side, and the timeout waits out short write locks.
+            'busy_timeout' => env('DB_BUSY_TIMEOUT', 10000),
+            'journal_mode' => env('DB_JOURNAL_MODE', 'wal'),
+            'synchronous' => env('DB_SYNCHRONOUS', 'normal'),
             'transaction_mode' => 'DEFERRED',
         ],
 
