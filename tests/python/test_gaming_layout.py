@@ -74,10 +74,17 @@ class TestCamBoxAndLayout(unittest.TestCase):
 
     def test_filter_with_cam_crops_cam_and_ends_in_outv(self):
         fc = build_gaming_filter(W, H, [1500, 40, 360, 270])
-        self.assertIn('split=3', fc)
+        self.assertIn('split=4', fc)
         self.assertIn('crop=360:270:1500:40', fc)
         self.assertTrue(fc.endswith('[outv]'))
         self.assertEqual(fc.count('[outv]'), 1)
+
+    def test_gameplay_strip_hides_the_original_cam(self):
+        # The cam already has its own panel, so its spot inside the gameplay is blurred over
+        fc = build_gaming_filter(W, H, [1500, 40, 360, 270])
+        game_chain = next(p for p in fc.split(';') if p.endswith('[ggame]'))
+        self.assertIn('overlay=1500:40', game_chain)
+        self.assertTrue(any('crop=360:270:1500:40' in p and 'gblur' in p for p in fc.split(';')))
 
     def test_filter_without_cam_has_no_cam_crop(self):
         fc = build_gaming_filter(W, H, None)

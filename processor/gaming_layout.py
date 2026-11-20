@@ -215,9 +215,11 @@ def build_gaming_filter(input_w, input_h, cam_box=None):
 
     cx, cy, cw, ch = cam_box
     return ";".join([
-        "[0:v]split=3[gsrc_bg][gsrc_game][gsrc_cam]",
+        "[0:v]split=4[gsrc_bg][gsrc_game][gsrc_hide][gsrc_cam]",
         f"[gsrc_bg]{background}",
-        f"[gsrc_game]{game}",
+        # The cam gets its own panel, so blur its original spot inside the gameplay
+        f"[gsrc_hide]crop={cw}:{ch}:{cx}:{cy},gblur=sigma=30[ghide]",
+        f"[gsrc_game][ghide]overlay={cx}:{cy},{game}",
         f"[gsrc_cam]crop={cw}:{ch}:{cx}:{cy},scale={L['cam_w']}:{L['cam_h']},setsar=1[gcam]",
         f"[gbg][ggame]overlay={L['game_x']}:{L['game_y']}[gmid]",
         f"[gmid][gcam]overlay={L['cam_x']}:{L['cam_y']}[outv]",
