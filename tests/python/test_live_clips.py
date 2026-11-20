@@ -146,6 +146,17 @@ class TestQueueFile(unittest.TestCase):
                 f.write('{not json')
             self.assertEqual(load_queue(path), [])
 
+    def test_clipped_windows_only_counts_finished_moments_of_that_vod(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'live_moments.json')
+            save_queue([
+                {'id': 'a', 'at': T0, 'status': 'done', 'vod_id': '900', 'start_s': 100, 'end_s': 155},
+                {'id': 'b', 'at': T0, 'status': 'failed', 'vod_id': '900', 'start_s': 300, 'end_s': 355},
+                {'id': 'c', 'at': T0, 'status': 'done', 'vod_id': '901', 'start_s': 500, 'end_s': 555},
+                {'id': 'd', 'at': T0, 'status': 'done', 'vod_id': 900},  # older entry without a span
+            ], path)
+            self.assertEqual(live_clips.clipped_windows(900, path), [(100, 155)])
+
 
 if __name__ == '__main__':
     unittest.main()

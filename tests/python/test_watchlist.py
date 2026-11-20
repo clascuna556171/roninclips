@@ -340,6 +340,24 @@ class TestLiveMoments(TestWatchlistDb.__base__):
         self.assertTrue(settings['full_video_mode'])
         self.assertEqual(settings['caption_style'], 'cyber_pink')
         self.assertEqual((self.stored()['status'], self.stored()['long_video_id']), ('done', job['id']))
+        # the chat spike rides along for the fallback title, and the VOD span is kept for dedupe
+        self.assertEqual(settings['live_chat'], {'rate': 12.0, 'baseline': 3.0, 'z': 8.0})
+        self.assertIn('live_at_label', settings)
+        self.assertEqual((self.stored()['start_s'], self.stored()['end_s']),
+                         (3600 - live_clips.PRE_S, 3600 + live_clips.POST_S))
+
+    def test_post_stream_vod_job_skips_spans_already_clipped_live(self):
+        m = self.queue()
+        self.run_moment(m, (self.AT - 3600, 3700), now=self.AT + 120)
+        with mock.patch.object(watchlist, 'list_channel_vods', return_value=[vod(900)]), \
+                mock.patch.object(watchlist, 'vod_is_recording', return_value=False):
+            watchlist.check_all(self.db)
+        wv = watchlist.next_queued(self.db)
+        self.assertEqual(wv['vod_id'], '900')
+        vid = watchlist.prepare_long_video(self.db, wv)
+        settings = json.loads(self.rows("SELECT processing_settings FROM long_videos WHERE id = %s",
+                                        (vid,))[0]['processing_settings'])
+        self.assertEqual(settings['skip_windows'], [[3600 - live_clips.PRE_S, 3600 + live_clips.POST_S]])
 
     def test_download_failure_retries_then_fails_without_empty_jobs(self):
         m = self.queue()

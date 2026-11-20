@@ -126,8 +126,11 @@ def pick_base_settings(rows):
     return {}
 
 
-def build_settings(base, login, vod_id):
+def build_settings(base, login, vod_id, skip_windows=()):
+    """`skip_windows`: [start_s, end_s] VOD spans already clipped live, so the VOD pass skips them."""
     settings = {k: base[k] for k in PREF_KEYS if k in base}
+    if skip_windows:
+        settings['skip_windows'] = [[int(s), int(e)] for s, e in skip_windows]
     settings.update({
         'stream_moments': True,
         'full_video_mode': False,
@@ -142,9 +145,14 @@ def build_settings(base, login, vod_id):
     return settings
 
 
-def live_settings(base, login, vod_id, offset_s):
-    """A live moment: one clip rendered from the already-downloaded window (no VOD import)."""
+def live_settings(base, login, vod_id, offset_s, moment=None, at_label=None):
+    """A live moment: one clip rendered from the already-downloaded window (no VOD import).
+    The chat spike and time label give the clip a fallback title when the AI can't."""
     settings = {k: base[k] for k in PREF_KEYS if k in base}
+    if moment:
+        settings['live_chat'] = {k: moment[k] for k in ('rate', 'baseline', 'z') if k in moment}
+    if at_label:
+        settings['live_at_label'] = at_label
     settings.update({
         'full_video_mode': True,
         'stream_moments': False,
@@ -350,7 +358,7 @@ def prepare_long_video(db, wv):
 
     cur.execute("SELECT processing_settings FROM long_videos ORDER BY id DESC LIMIT 50")
     base = pick_base_settings([r['processing_settings'] for r in cur.fetchall()])
-    settings = build_settings(base, wv['login'], wv['vod_id'])
+    settings = build_settings(base, wv['login'], wv['vod_id'], live_clips.clipped_windows(wv['vod_id']))
     name = f"{wv['login']} · {wv.get('title') or 'Twitch VOD ' + wv['vod_id']}"[:180]
     cur.execute("INSERT INTO long_videos (filename, storage_path, status, processing_settings, created_at, updated_at) "
                 "VALUES (%s, %s, %s, %s, %s, %s)", (name, '', 'pending', json.dumps(settings), now, now))
@@ -461,14 +469,15 @@ def process_live_moment(db, m, heartbeat):
     cur = db.cursor()
     cur.execute("SELECT processing_settings FROM long_videos ORDER BY id DESC LIMIT 50")
     base = pick_base_settings([r['processing_settings'] for r in cur.fetchall()])
-    settings = live_settings(base, login, vod_id, start_s)
+    settings = live_settings(base, login, vod_id, start_s, m, stamp)
     name = f"{login} · LIVE chat spike {stamp}"[:180]
     ts = utc_now_str()
     cur.execute("INSERT INTO long_videos (filename, storage_path, status, processing_settings, created_at, updated_at) "
                 "VALUES (%s, %s, %s, %s, %s, %s)", (name, path, 'pending', json.dumps(settings), ts, ts))
     db.commit()
     video_id = cur.lastrowid
-    live_clips.update_moment(m['id'], status='processing', long_video_id=video_id, vod_id=vod_id)
+    live_clips.update_moment(m['id'], status='processing', long_video_id=video_id, vod_id=vod_id,
+                             start_s=start_s, end_s=end_s)
     heartbeat.beat(current={'vod_id': vod_id, 'channel': login,
                             'title': f'Live chat spike {stamp}', 'long_video_id': video_id})
     log(f"  rendering as job #{video_id}...")

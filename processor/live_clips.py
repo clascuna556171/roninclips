@@ -167,6 +167,14 @@ def next_due_moment(now, path=None):
     return None
 
 
+def clipped_windows(vod_id, path=None):
+    """[start_s, end_s] spans of `vod_id` already turned into live clips."""
+    with _queue_lock:
+        return [(m['start_s'], m['end_s']) for m in load_queue(path)
+                if m['status'] == 'done' and str(m.get('vod_id')) == str(vod_id)
+                and m.get('start_s') is not None and m.get('end_s') is not None]
+
+
 def requeue_interrupted(path=None):
     """A moment left 'processing' means the watcher stopped mid-render: try it again."""
     with _queue_lock:

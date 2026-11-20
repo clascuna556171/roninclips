@@ -14,7 +14,10 @@ from moments import (
     CHAT_LAG_S, chat_series, clip_window, combine_scores, describe, detect_moments_from_signals,
     load_chat, loudness_from_pcm, normalize_message, pick_peaks, rolling_zscore,
 )
-from engine import build_moment_prompt, merge_moment_picks, moment_fallback_meta
+from engine import (
+    build_live_prompt, build_moment_prompt, live_clip_meta, live_fallback_meta, merge_moment_picks,
+    moment_fallback_meta,
+)
 
 
 def synthetic_loudness(duration, base=-30.0, seed=1):
@@ -243,6 +246,51 @@ class TestEngineMomentHelpers(unittest.TestCase):
         self.assertIn('Moment 1:', prompt)
         self.assertIn('(no clear speech)', prompt)
         self.assertIn('Pick the best 1', prompt)
+
+    def test_drop_clipped_removes_candidates_peaking_inside_live_spans(self):
+        cands = [make_candidate(0, 100), make_candidate(1, 300), make_candidate(2, 500)]  # peaks 125, 325, 525
+        kept = moments.drop_clipped(cands, [[290, 345], [600, 655]])
+        self.assertEqual([m['peak'] for m in kept], [125.0, 525.0])
+        self.assertEqual(moments.drop_clipped(cands, None), cands)
+
+
+LIVE = {'watch_channel': 'kaicenat', 'live_at_label': 'Nov 20 21:14',
+        'live_chat': {'rate': 12.0, 'baseline': 3.0, 'z': 8.0}}
+
+
+class TestLiveClipTitles(unittest.TestCase):
+    def test_fallback_names_channel_time_and_chat_rate(self):
+        meta = live_fallback_meta(LIVE)
+        self.assertEqual(meta['title'], 'kaicenat live moment (Nov 20 21:14)')
+        self.assertEqual(meta['reason'], 'Chat flooded at 12.0 msg/s (usual 3.0)')
+        self.assertEqual(meta['source'], 'live_clip')
+        self.assertTrue(meta['hashtags'].startswith('#kaicenat '))
+        self.assertNotIn('fullvideo', meta['hashtags'])
+        self.assertTrue(50 <= meta['virality_score'] <= 99)
+
+    def test_fallback_without_spike_data(self):
+        meta = live_fallback_meta({'live_clip': True})
+        self.assertEqual(meta['title'], 'Stream live moment')
+        self.assertEqual(meta['virality_score'], 75)
+        self.assertFalse(meta['hashtags'].startswith('# '))
+
+    def test_ai_pick_overrides_text_and_clamps_scores(self):
+        meta = live_clip_meta(LIVE, [{'title': 'Kai loses it', 'virality_score': 140, 'hashtags': '  '}])
+        self.assertEqual(meta['title'], 'Kai loses it')
+        self.assertEqual(meta['virality_score'], 100)
+        self.assertTrue(meta['hashtags'].startswith('#kaicenat'))  # blank AI field ignored
+        self.assertEqual(meta['signal_summary'], 'Chat flooded at 12.0 msg/s (usual 3.0)')
+
+    def test_unusable_ai_answers_fall_back(self):
+        for pick in (None, [], ['text'], 'text'):
+            self.assertEqual(live_clip_meta(LIVE, pick)['title'], 'kaicenat live moment (Nov 20 21:14)')
+
+    def test_prompt_carries_channel_spike_and_transcript(self):
+        prompt = build_live_prompt(LIVE, '[00:00:01 - 00:00:04] no way he did that')
+        self.assertIn("kaicenat's Twitch stream", prompt)
+        self.assertIn('12.0 msg/s', prompt)
+        self.assertIn('no way he did that', prompt)
+        self.assertIn('JSON array with exactly one object', prompt)
 
 
 if __name__ == '__main__':

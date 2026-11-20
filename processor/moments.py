@@ -298,6 +298,12 @@ def detect_moments_from_signals(loudness_db, messages, count):
     return moments
 
 
+def drop_clipped(candidates, windows):
+    """Candidates whose peak isn't inside an already-clipped [start, end] span (e.g. live clips)."""
+    spans = [(float(s), float(e)) for s, e in windows or ()]
+    return [m for m in candidates if not any(s <= m['peak'] <= e for s, e in spans)]
+
+
 def detect_moments(media_path, chat_path, count):
     """Convenience wrapper: real audio + optional chat.jsonl."""
     loud = audio_loudness(media_path)

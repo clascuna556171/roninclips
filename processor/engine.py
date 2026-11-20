@@ -92,7 +92,7 @@ client = Groq(api_key=os.environ.get("GROQ_API_KEY", ""))
 sys.path.insert(0, os.path.dirname(__file__))
 from db_helper import get_db, DatabaseUnavailable
 from vod_import import import_vod, import_vod_sparse, fetch_clip_source, cleanup_sparse_files, VodImportError
-from moments import detect_moments, detect_moments_from_signals, load_chat
+from moments import detect_moments, detect_moments_from_signals, drop_clipped, load_chat
 from hw_accel import get_whisper_config, detect_ffmpeg_encoder, get_hardware_status
 from face_tracker import get_smart_crop_filter, get_video_info
 from effects import detect_volume_spikes, generate_punchin_filter, generate_kenburns_filter
@@ -487,6 +487,79 @@ Candidates:
 """ + "\n\n".join(blocks)
 
 
+def apply_ai_fields(meta, pick):
+    """Copy the AI's valid text fields and clamped scores onto `meta`."""
+    for key in ('title', 'reason', 'social_caption', 'hashtags', 'shorts_description'):
+        if isinstance(pick.get(key), str) and pick[key].strip():
+            meta[key] = pick[key].strip()
+    for key in ('virality_score', 'hook_strength', 'pacing_energy', 'shareability'):
+        try:
+            meta[key] = max(1, min(100, int(pick[key])))
+        except (KeyError, TypeError, ValueError):
+            pass
+    return meta
+
+
+def live_fallback_meta(settings):
+    """Metadata for a live chat-flood clip, built from the chat spike alone."""
+    login = settings.get('watch_channel') or ''
+    chat = settings.get('live_chat') or {}
+    when = settings.get('live_at_label')
+    title = f"{login or 'Stream'} live moment" + (f" ({when})" if when else '')
+    if chat.get('rate') and chat.get('baseline'):
+        summary = f"Chat flooded at {chat['rate']} msg/s (usual {chat['baseline']})"
+    else:
+        summary = 'Chat flooded during the live stream'
+    score = _signal_pct(chat['z'] / 2) if chat.get('z') else 75
+    return {
+        'title': title,
+        'virality_score': score,
+        'hook_strength': score,
+        'pacing_energy': score,
+        'shareability': score,
+        'reason': summary,
+        'social_caption': f"{summary} 🔥",
+        'hashtags': (f"#{login} " if login else '') + STREAM_HASHTAGS,
+        'shorts_description': f"{login or 'Stream'} live: {summary[0].lower() + summary[1:]}.",
+        'source': 'live_clip',
+        'signal_summary': summary,
+        'signals': {k: chat.get(k) for k in ('rate', 'baseline', 'z')},
+    }
+
+
+def build_live_prompt(settings, transcript_text):
+    summary = live_fallback_meta(settings)['signal_summary']
+    who = f"{settings['watch_channel']}'s" if settings.get('watch_channel') else 'a'
+    return f"""This clip was cut live from {who} Twitch stream right where chat flooded ({summary}).
+Write a punchy high-CTR title for a short vertical clip (TikTok / Reels / Shorts) based on what is said, a realistic Virality Score (1-100) with sub-scores, a social caption with emojis, hashtags and a YouTube Shorts description. Do not invent events the transcript does not support.
+
+Return STRICTLY a JSON array with exactly one object, no markdown:
+[
+  {{
+    "title": "Short Punchy Title",
+    "virality_score": 90,
+    "hook_strength": 90,
+    "pacing_energy": 90,
+    "shareability": 90,
+    "reason": "Why this moment works",
+    "social_caption": "Caption with emojis",
+    "hashtags": "#gaming #fyp",
+    "shorts_description": "Search-optimized description"
+  }}
+]
+
+Transcript:
+\"{(transcript_text or '').strip()[:2500]}\""""
+
+
+def live_clip_meta(settings, pick):
+    """Chat-spike meta, overlaid with the AI's answer (a 1-item array) when it is usable."""
+    meta = live_fallback_meta(settings)
+    if isinstance(pick, list) and pick:
+        pick = pick[0]
+    return apply_ai_fields(meta, pick) if isinstance(pick, dict) else meta
+
+
 def merge_moment_picks(candidates, picks, count):
     """
     Groq's valid picks first (in its order, by id), then fill from the detector's
@@ -504,16 +577,7 @@ def merge_moment_picks(candidates, picks, count):
         if idx in used or not (0 <= idx < len(candidates)):
             continue
         m = candidates[idx]
-        meta = moment_fallback_meta(m)
-        for key in ('title', 'reason', 'social_caption', 'hashtags', 'shorts_description'):
-            if isinstance(p.get(key), str) and p[key].strip():
-                meta[key] = p[key].strip()
-        for key in ('virality_score', 'hook_strength', 'pacing_energy', 'shareability'):
-            try:
-                meta[key] = max(1, min(100, int(p[key])))
-            except (KeyError, TypeError, ValueError):
-                pass
-        chosen.append((m, meta))
+        chosen.append((m, apply_ai_fields(moment_fallback_meta(m), p)))
         used.add(idx)
     for idx, m in enumerate(candidates):
         if len(chosen) >= count:
@@ -1213,9 +1277,17 @@ def run_pipeline():
                 moment_candidates, vod_seconds, used_chat = detect_moments(audio_path, chat_path, clip_count * 2)
             print(f"  Scanned {vod_seconds}s of {'chat' if chat_only else 'audio'}"
                   f"{' and chat' if used_chat and not chat_only else ''}: {len(moment_candidates)} candidate moments")
+            found_any = bool(moment_candidates)
+            if SETTINGS.get('skip_windows') and moment_candidates:
+                kept = drop_clipped(moment_candidates, SETTINGS['skip_windows'])
+                if len(kept) < len(moment_candidates):
+                    print(f"  Skipping {len(moment_candidates) - len(kept)} moment(s) already clipped live.")
+                moment_candidates = kept
             for i, m in enumerate(moment_candidates):
                 print(f"   #{i} @ {format_time(m['peak'])} score {m['score']:.2f}: {m['summary']}")
             if not moment_candidates:
+                if found_any:
+                    raise Exception("Every moment found in this VOD was already clipped live.")
                 raise Exception("No chat or audio spikes found (the VOD may be silent). Try AI Viral Hooks or Full Video mode.")
             if chat_only:
                 transcript_text = ''
@@ -1291,7 +1363,25 @@ def run_pipeline():
             full_end = format_seconds_ffmpeg(total_seconds)
             print(f"   Video duration: {total_seconds:.2f}s ({full_end})")
 
-            full_meta = {
+            full_meta = None
+            if SETTINGS.get('live_clip'):
+                pick = None
+                spoken = re.sub(r'\[[^\]]*\]', '', transcript_text or '').strip()
+                if len(spoken) >= MIN_EXCERPT_CHARS:
+                    print("\nTitling the live clip with the AI...")
+                    raw_response, groq_err = llm_complete(build_live_prompt(SETTINGS, transcript_text), get_groq_models())
+                    if raw_response is None:
+                        print(f"  ⚠️ AI unavailable ({groq_err}); titling from the chat spike.")
+                    else:
+                        try:
+                            pick = parse_groq_json_response(raw_response)
+                        except Exception as parse_err:
+                            print(f"  ⚠️ AI JSON parse warning ({parse_err}); titling from the chat spike.")
+                else:
+                    print("\nℹ️ Live clip has almost no speech; titling from the chat spike.")
+                full_meta = live_clip_meta(SETTINGS, pick)
+                print(f"   Live clip title: {full_meta['title']}")
+            full_meta = full_meta or {
                 'title': 'Full Video Render',
                 'virality_score': 90,
                 'hook_strength': 90,
