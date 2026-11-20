@@ -329,7 +329,7 @@ def recover_interrupted(db):
 def _delete_clip_files(clip):
     paths = [os.path.join(ROOT_DIR, clip['output_path']) if clip.get('output_path') else None]
     for rel in (f"intermediate_{clip['id']}.mp4", f"clip_{clip['id']}_words.json", f"clip_{clip['id']}.ass",
-                f"public/clip_{clip['id']}_frame.jpg"):
+                f"public/clip_{clip['id']}_frame.jpg", f"public/clip_{clip['id']}_preview.jpg"):
         paths.append(os.path.join(ROOT_DIR, 'storage', 'app', rel))
     paths.append(os.path.join(ROOT_DIR, 'storage', 'logs', f"re_render_{clip['id']}.log"))
     for p in paths:

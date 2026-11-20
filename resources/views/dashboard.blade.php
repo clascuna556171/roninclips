@@ -284,7 +284,10 @@
                                     <option value="bottom" selected>Bottom (Safe Zone for TikTok/Reels UI)</option>
                                     <option value="center">Center (Eye-Level / Dynamic Focus)</option>
                                     <option value="top">Top (Header Banner)</option>
+                                    <option value="custom" disabled>Custom (dragged in the preview)</option>
                                 </select>
+                                <input type="hidden" name="caption_x" id="caption_x" value="">
+                                <input type="hidden" name="caption_y" id="caption_y" value="">
                             </div>
                             <div class="form-group">
                                 <label for="caption_layout">Layout Chunk Size</label>
@@ -299,16 +302,19 @@
                             <div class="subs-preview-container">
                                 <div class="subs-preview-header">
                                     <span>[ LIVE CAPTION SIMULATOR ]</span>
+                                    <small style="display:block; color: var(--color-text-muted); font-weight: 400; letter-spacing: 0;">Drag the caption to place it on every new clip.</small>
                                 </div>
-                                <div class="subs-simulator-screen" id="subs-simulator-screen">
-                                    <div class="subs-sim-notch"></div>
-                                    <div class="subs-sim-content pos-bottom" id="subs-sim-content">
+                                <div class="subs-simulator-screen caption-stage" id="subs-simulator-screen">
+                                    <div class="caption-safe-band"></div>
+                                    <div class="caption-center-guide"></div>
+                                    <div class="subs-sim-content caption-drag" id="subs-sim-content" tabindex="0" role="slider" aria-label="Caption position. Drag, or use the arrow keys.">
                                         <span class="sim-word" id="sim-word-1">THIS</span>
                                         <span class="sim-word active-word" id="sim-word-2">HOOK</span>
                                         <span class="sim-word" id="sim-word-3">WILL</span>
                                         <span class="sim-word" id="sim-word-4">GO VIRAL</span>
                                     </div>
                                 </div>
+                                <div class="caption-stage-readout" id="subs-sim-readout" aria-live="polite"></div>
                             </div>
                         </div>
 
@@ -767,6 +773,11 @@
                                                         <button type="button" class="btn-input-action" onclick="openSubsEditor({{ $clip->id }})" title="Edit Subtitle Transcripts">
                                                             <i data-lucide="edit-3" class="icon-sm"></i> SUBS
                                                         </button>
+                                                        @if($hasVideo && file_exists(storage_path("app/clip_{$clip->id}_words.json")))
+                                                            <button type="button" class="btn-input-action" onclick="openCaptionEditor({{ $clip->id }})" title="Drag the captions to a new spot">
+                                                                <i data-lucide="move" class="icon-sm"></i> CAPTIONS
+                                                            </button>
+                                                        @endif
                                                         @if($frameUrl)
                                                             <button type="button" class="btn-input-action" onclick="openFacecamEditor({{ $clip->id }}, {{ json_encode($frameUrl) }}, {{ json_encode($gamingInfo) }})" title="Move or resize the facecam box">
                                                                 <i data-lucide="scan-face" class="icon-sm"></i> FACECAM
@@ -873,7 +884,7 @@
 
     <!-- ─── Interactive Subtitle Editor Modal ─── -->
     <div class="video-modal-backdrop" id="subs-modal" onclick="if(event.target===this) closeSubsEditor()">
-        <div class="video-modal-content" style="max-width: 820px;">
+        <div class="video-modal-content" style="max-width: 1000px;">
             <div class="video-modal-header">
                 <div class="video-modal-title">
                     <i data-lucide="file-edit" class="icon-md" style="color: #bf5af2;"></i>
@@ -883,8 +894,20 @@
             </div>
             <div class="video-modal-body" style="flex-direction: column; padding: 14px;">
                 <p style="color: var(--color-text-secondary); font-size: 11px; margin-bottom: 8px;">
-                    Edit words, adjust exact timestamps, delete filler words, or switch subtitle presets. ASS subtitle scripts and face tracking will re-generate seamlessly.
+                    Edit words, adjust exact timestamps, delete filler words, or switch subtitle presets. Drag the caption on the frame to move it. Only this clip is re-rendered.
                 </p>
+
+                <div class="subs-editor-layout">
+                <div class="subs-editor-stage-col">
+                    <div class="caption-stage" id="subs-caption-stage">
+                        <div class="caption-stage-status" id="subs-caption-status">Grabbing a frame from this clip...</div>
+                        <div class="caption-safe-band"></div>
+                        <div class="caption-center-guide"></div>
+                        <div class="caption-drag" id="subs-caption-drag" tabindex="0" role="slider" aria-label="Caption position. Drag, or use the arrow keys." hidden></div>
+                    </div>
+                    <div class="caption-stage-readout" id="subs-caption-readout" aria-live="polite"></div>
+                </div>
+                <div class="subs-editor-main-col">
 
                 <!-- Subtitle Editor Toolbar: Style Presets, Position, Add Word -->
                 <div class="sub-editor-toolbar" id="subs-editor-toolbar" style="display: none;">
@@ -908,6 +931,7 @@
                             <option value="bottom">Bottom (Safe Zone)</option>
                             <option value="center">Center (Eye-Level)</option>
                             <option value="top">Top (Banner)</option>
+                            <option value="custom" disabled>Custom (dragged)</option>
                         </select>
                     </div>
 
@@ -928,6 +952,50 @@
                 <div class="subs-editor-actions" id="subs-editor-actions" style="display: none;">
                     <button type="button" class="btn-input-action" onclick="closeSubsEditor()">CANCEL</button>
                     <button type="button" class="btn-subs-save" id="btn-subs-save" onclick="saveAndReRender()" style="display: inline-flex; align-items: center; gap: 5px;">
+                        <i data-lucide="refresh-cw" class="icon-sm"></i> SAVE & RE-RENDER
+                    </button>
+                </div>
+                </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ─── Move Captions Modal ─── -->
+    <div class="video-modal-backdrop" id="caption-modal" onclick="if(event.target===this) closeCaptionEditor()">
+        <div class="video-modal-content" style="max-width: 460px;">
+            <div class="video-modal-header">
+                <div class="video-modal-title">
+                    <i data-lucide="move" class="icon-md" style="color: #38bdf8;"></i>
+                    <span>[ MOVE CAPTIONS ]</span>
+                </div>
+                <button type="button" class="video-modal-close" onclick="closeCaptionEditor()" aria-label="Close move captions"><i data-lucide="x" class="icon-md"></i></button>
+            </div>
+            <div class="video-modal-body" style="flex-direction: column; padding: 14px;">
+                <p style="color: var(--color-text-secondary); font-size: 11px; margin: 0;">
+                    Drag the caption, or pick a preset. Only this clip is re-rendered.
+                </p>
+                <div style="width: min(240px, 100%); align-self: center;">
+                    <div class="caption-stage" id="move-caption-stage">
+                        <div class="caption-stage-status" id="move-caption-status">Grabbing a frame from this clip...</div>
+                        <div class="caption-safe-band"></div>
+                        <div class="caption-center-guide"></div>
+                        <div class="caption-drag" id="move-caption-drag" tabindex="0" role="slider" aria-label="Caption position. Drag, or use the arrow keys." hidden></div>
+                    </div>
+                    <div class="caption-stage-readout" id="move-caption-readout" aria-live="polite"></div>
+                </div>
+                <div class="sub-editor-toolbar-group" style="justify-content: center;">
+                    <label for="move-caption-pos" style="font-size: 10px; color: var(--color-text-muted); font-weight: 700;">PRESET:</label>
+                    <select id="move-caption-pos" class="sub-editor-select">
+                        <option value="bottom">Bottom (Safe Zone)</option>
+                        <option value="center">Center (Eye-Level)</option>
+                        <option value="top">Top (Banner)</option>
+                        <option value="custom" disabled>Custom (dragged)</option>
+                    </select>
+                </div>
+                <div class="subs-editor-actions" style="display: flex;">
+                    <button type="button" class="btn-input-action" onclick="closeCaptionEditor()">CANCEL</button>
+                    <button type="button" class="btn-subs-save" id="btn-caption-save" onclick="saveCaptionMove()" disabled style="display: inline-flex; align-items: center; gap: 5px;">
                         <i data-lucide="refresh-cw" class="icon-sm"></i> SAVE & RE-RENDER
                     </button>
                 </div>
@@ -1452,7 +1520,6 @@
 
             const cfg = styleColors[styleKey] || styleColors['yellow_pop'];
             simContent.style.fontFamily = `"${fontName}", sans-serif`;
-            simContent.className = 'subs-sim-content pos-' + posVal;
 
             document.querySelectorAll('.subs-sim-content .sim-word').forEach(el => {
                 if (el.classList.contains('active-word')) {
@@ -1477,10 +1544,28 @@
                 document.getElementById('sim-word-3').style.display = 'inline';
                 document.getElementById('sim-word-4').style.display = 'inline';
             }
+            // simCaption is defined further down; the interval and listeners only run after that
+            if (typeof simCaption !== 'undefined' && simCaption) {
+                const fmt = document.querySelector('input[name="output_format"]:checked');
+                simStage.classList.toggle('is-landscape', !!fmt && fmt.value !== '9:16');
+                simCaption.state.layout = CAPTION_FONT[layoutVal] ? layoutVal : 'two_line';
+                simCaption.place();
+                const gaming = document.getElementById('gaming_layout');
+                if (gaming && gaming.checked) {
+                    const r = document.getElementById('subs-sim-readout');
+                    r.textContent += ' Gaming layout clips keep captions at the bottom.';
+                }
+            }
         }
 
-        [captionStyleSelect, captionFontSelect, captionPosSelect, captionLayoutSelect].forEach(el => {
+        [captionStyleSelect, captionFontSelect, captionLayoutSelect].forEach(el => {
             if (el) el.addEventListener('change', updateSubtitleSimulator);
+        });
+        if (captionPosSelect) captionPosSelect.addEventListener('change', () => {
+            if (captionPosSelect.value === 'custom') return;
+            simCaptionX.value = '';
+            simCaptionY.value = '';
+            if (simCaption) simCaption.setPreset(captionPosSelect.value);
         });
 
         let simActiveIdx = 1;
@@ -1497,9 +1582,202 @@
             updateSubtitleSimulator();
         }, 1200);
 
+        // ─── 6b. Caption drag stage (sidebar simulator, subtitle editor, Move captions) ───
+        // Positions are the caption centre as 0..1 fractions of the frame, like subtitles.py `pos_xy`.
+        const CAPTION_EDGE = { top: 0.10, bottom: 0.86 };           // where the ASS presets sit
+        const CAPTION_FONT = {                                       // subtitles.py font size per layout
+            two_line: { div: 24, min: 48, words: 4 },
+            single_word: { div: 18, min: 60, words: 1 },
+            full_line: { div: 28, min: 40, words: 7 },
+        };
+        const CAPTION_PRESET_NAMES = { bottom: 'Bottom preset', center: 'Center preset', top: 'Top preset' };
+
+        function createCaptionStage(stage, cap, readout, onChange) {
+            const st = { x: 0.5, y: 0.8, position: 'bottom', custom: false, layout: 'two_line' };
+            const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), Math.max(lo, hi));
+            let drag = null;
+
+            function frac() {
+                const s = stage.getBoundingClientRect(), c = cap.getBoundingClientRect();
+                return { w: s.width ? c.width / s.width : 0, h: s.height ? c.height / s.height : 0 };
+            }
+            function fitFont() {
+                const h = stage.clientHeight;
+                if (!h) return;
+                const outH = stage.classList.contains('is-landscape') ? 1080 : 1920;
+                const f = CAPTION_FONT[st.layout] || CAPTION_FONT.two_line;
+                cap.style.fontSize = (Math.max(f.min, outH / f.div) / outH * h) + 'px';
+            }
+            function place() {
+                fitFont();
+                const { w, h } = frac();
+                let x = st.x, y = st.y;
+                if (!st.custom) {
+                    x = 0.5;
+                    y = st.position === 'top' ? CAPTION_EDGE.top + h / 2
+                      : st.position === 'center' ? 0.5 : CAPTION_EDGE.bottom - h / 2;
+                }
+                cap.style.left = (x * 100) + '%';
+                cap.style.top = (y * 100) + '%';
+                if (!readout) return;
+                const low = st.custom && !stage.classList.contains('is-landscape') && (y + h / 2) > CAPTION_EDGE.bottom + 0.01;
+                readout.textContent = st.custom
+                    ? `Custom spot: ${Math.round(x * 100)}% across, ${Math.round(y * 100)}% down` + (low ? '. May sit under the TikTok/Shorts buttons.' : '')
+                    : (CAPTION_PRESET_NAMES[st.position] || 'Bottom preset') + '. Drag the caption to move it.';
+                readout.classList.toggle('warn', low);
+            }
+            function moveTo(x, y) {
+                const { w, h } = frac();
+                x = clamp(x, Math.max(0.05, w / 2), Math.min(0.95, 1 - w / 2));
+                y = clamp(y, Math.max(0.05, h / 2), Math.min(0.95, 1 - h / 2));
+                const snapped = Math.abs(x - 0.5) < 0.03;
+                if (snapped) x = 0.5;
+                stage.classList.toggle('is-snapped', snapped && !!drag);
+                Object.assign(st, { x, y, custom: true });
+                place();
+                if (onChange) onChange(api);
+            }
+
+            cap.addEventListener('pointerdown', e => {
+                e.preventDefault();
+                const s = stage.getBoundingClientRect(), c = cap.getBoundingClientRect();
+                drag = { dx: e.clientX - (c.left + c.width / 2), dy: e.clientY - (c.top + c.height / 2), s };
+                cap.classList.add('is-dragging');
+                cap.setPointerCapture(e.pointerId);
+            });
+            cap.addEventListener('pointermove', e => {
+                if (!drag) return;
+                const s = stage.getBoundingClientRect();
+                moveTo((e.clientX - drag.dx - s.left) / s.width, (e.clientY - drag.dy - s.top) / s.height);
+            });
+            const end = () => { drag = null; cap.classList.remove('is-dragging'); stage.classList.remove('is-snapped'); };
+            cap.addEventListener('pointerup', end);
+            cap.addEventListener('pointercancel', end);
+            cap.addEventListener('keydown', e => {
+                const step = e.shiftKey ? 0.05 : 0.01;
+                const d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
+                if (!d) return;
+                e.preventDefault();
+                const cur = api.current();
+                moveTo(cur.x + d[0], cur.y + d[1]);
+            });
+            if (window.ResizeObserver) new ResizeObserver(place).observe(stage);
+
+            const api = {
+                state: st,
+                place,
+                /** Where the caption centre is now, presets included. */
+                current() {
+                    if (st.custom) return { x: st.x, y: st.y };
+                    const s = stage.getBoundingClientRect(), c = cap.getBoundingClientRect();
+                    return { x: 0.5, y: s.height ? (c.top + c.height / 2 - s.top) / s.height : 0.8 };
+                },
+                setPreset(position) { Object.assign(st, { position: position || 'bottom', custom: false }); place(); },
+                setCustom(x, y) { Object.assign(st, { x: Number(x), y: Number(y), custom: true }); place(); },
+                setLayout(layout) { st.layout = CAPTION_FONT[layout] ? layout : 'two_line'; place(); },
+                setLandscape(on) { stage.classList.toggle('is-landscape', !!on); place(); },
+            };
+            return api;
+        }
+
+        /** Caption preview text: the clip's first words in its style, first word highlighted. */
+        function renderCaptionPreview(cap, words, layout, styleKey, fontName) {
+            const f = CAPTION_FONT[layout] || CAPTION_FONT.two_line;
+            const cfg = styleColors[styleKey] || styleColors['yellow_pop'];
+            const list = (words || []).map(w => String(w.word || '').replace(/[{}\\]/g, '').trim().toUpperCase()).filter(Boolean).slice(0, f.words);
+            if (!list.length) list.push('YOUR', 'CAPTION', 'GOES', 'HERE');
+            const esc = t => t.replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+            cap.innerHTML = list.map((w, i) => {
+                const brk = (layout === 'two_line' && i === 2) ? '<br>' : '';
+                const color = i === 0 ? cfg.active : cfg.inactive;
+                return brk + `<span style="color:${color}">${esc(w)}</span>`;
+            }).join(' ');
+            cap.style.fontFamily = `"${fontName || 'Arial Black'}", sans-serif`;
+        }
+
+        // Sidebar simulator: dragging sets the spot new clips are rendered with
+        const simStage = document.getElementById('subs-simulator-screen');
+        const simCaptionX = document.getElementById('caption_x');
+        const simCaptionY = document.getElementById('caption_y');
+        const simCaption = (simStage && simContent) ? createCaptionStage(simStage, simContent, document.getElementById('subs-sim-readout'), stg => {
+            simCaptionX.value = stg.state.x.toFixed(4);
+            simCaptionY.value = stg.state.y.toFixed(4);
+            if (captionPosSelect) captionPosSelect.value = 'custom';
+        }) : null;
+        if (simCaption) {
+            simCaption.setPreset(captionPosSelect ? captionPosSelect.value : 'bottom');
+            document.querySelectorAll('input[name="output_format"], #gaming_layout').forEach(el => el.addEventListener('change', updateSubtitleSimulator));
+        }
+
         // ─── 7. Subtitle Word Editor Modal ───
         let currentClipId = null;
         let currentSubsData = [];
+        let subsCaptionInfo = null;      // GET /clips/{id}/caption
+        let subsCaptionChanged = false;  // only send a position when the user moved it
+        const subsPosSelect = document.getElementById('modal-subs-pos');
+        const subsStyleSelect = document.getElementById('modal-subs-style');
+        const subsCaption = createCaptionStage(
+            document.getElementById('subs-caption-stage'),
+            document.getElementById('subs-caption-drag'),
+            document.getElementById('subs-caption-readout'),
+            () => { subsCaptionChanged = true; subsPosSelect.value = 'custom'; }
+        );
+        subsPosSelect.addEventListener('change', () => {
+            if (subsPosSelect.value === 'custom') return;
+            subsCaptionChanged = true;
+            subsCaption.setPreset(subsPosSelect.value);
+        });
+        subsStyleSelect.addEventListener('change', refreshSubsCaptionPreview);
+
+        function refreshSubsCaptionPreview() {
+            if (!subsCaptionInfo) return;
+            renderCaptionPreview(document.getElementById('subs-caption-drag'), currentSubsData,
+                subsCaptionInfo.layout, subsStyleSelect.value, subsCaptionInfo.font);
+            subsCaption.place();
+        }
+
+        /** Load frame + current caption spot into a stage. Returns the caption info, or null on failure. */
+        async function loadCaptionStage(clipId, ctrl, ids, posSelect) {
+            const status = document.getElementById(ids.status);
+            const cap = document.getElementById(ids.drag);
+            const stageEl = document.getElementById(ids.stage);
+            status.textContent = 'Grabbing a frame from this clip...';
+            status.style.display = 'flex';
+            status.style.alignItems = '';
+            cap.hidden = true;
+            stageEl.style.backgroundImage = '';
+            try {
+                const res = await fetch(`/clips/${clipId}/caption`, { headers: { 'Accept': 'application/json' } });
+                if (!res.ok) throw new Error('Could not load the caption settings for this clip.');
+                const info = await res.json();
+                if (info.frame_url) {
+                    stageEl.style.backgroundImage = `url("${info.frame_url}")`;
+                    status.style.display = 'none';
+                } else {
+                    status.textContent = 'Could not grab a frame. You can still place the caption.';
+                    status.style.alignItems = 'flex-start';
+                }
+                cap.hidden = false;
+                ctrl.state.layout = CAPTION_FONT[info.layout] ? info.layout : 'two_line';
+                stageEl.classList.toggle('is-landscape', info.output_format !== '9:16');
+                if (info.x !== null && info.y !== null) {
+                    ctrl.setCustom(info.x, info.y);
+                    posSelect.value = 'custom';
+                } else {
+                    ctrl.setPreset(info.position || 'bottom');
+                    posSelect.value = info.position || 'bottom';
+                }
+                return info;
+            } catch (err) {
+                status.textContent = err.message;
+                return null;
+            }
+        }
+
+        function captionPayload(ctrl) {
+            if (ctrl.state.custom) return { caption_x: ctrl.state.x, caption_y: ctrl.state.y };
+            return { caption_position: ctrl.state.position };
+        }
 
         async function openSubsEditor(clipId) {
             currentClipId = clipId;
@@ -1517,6 +1795,10 @@
             if (toolbar) toolbar.style.display = 'none';
             actions.style.display = 'none';
             grid.innerHTML = '';
+            subsCaptionInfo = null;
+            subsCaptionChanged = false;
+            const captionLoad = loadCaptionStage(clipId, subsCaption,
+                { stage: 'subs-caption-stage', drag: 'subs-caption-drag', status: 'subs-caption-status' }, subsPosSelect);
 
             try {
                 const res = await fetch(`/clips/${clipId}/transcript`);
@@ -1529,6 +1811,11 @@
                 }
 
                 renderSubsEditorGrid();
+                subsCaptionInfo = await captionLoad;
+                if (subsCaptionInfo && subsStyleSelect.querySelector(`option[value="${subsCaptionInfo.style}"]`)) {
+                    subsStyleSelect.value = subsCaptionInfo.style;
+                }
+                refreshSubsCaptionPreview();
 
                 loading.style.display = 'none';
                 if (toolbar) toolbar.style.display = 'flex';
@@ -1619,8 +1906,7 @@
             btn.innerHTML = '<i data-lucide="loader" class="icon-sm" style="animation: spin 1s linear infinite;"></i> SAVING...';
             btn.disabled = true;
 
-            const styleVal = document.getElementById('modal-subs-style') ? document.getElementById('modal-subs-style').value : '';
-            const posVal = document.getElementById('modal-subs-pos') ? document.getElementById('modal-subs-pos').value : '';
+            const styleVal = subsStyleSelect ? subsStyleSelect.value : '';
 
             try {
                 const res = await fetch(`/clips/${currentClipId}/re-render`, {
@@ -1629,11 +1915,10 @@
                         'X-CSRF-TOKEN': '{{ csrf_token() }}',
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({
+                    body: JSON.stringify(Object.assign({
                         words: currentSubsData,
-                        caption_style: styleVal,
-                        caption_position: posVal
-                    })
+                        caption_style: styleVal
+                    }, subsCaptionChanged ? captionPayload(subsCaption) : {}))
                 });
                 const data = await res.json();
                 if (res.ok && data.success) {
@@ -1776,6 +2061,66 @@
             }
         }
 
+        // ─── 7c. Move Captions Modal ───
+        let captionClipId = null;
+        const movePosSelect = document.getElementById('move-caption-pos');
+        const moveSaveBtn = document.getElementById('btn-caption-save');
+        const moveCaption = createCaptionStage(
+            document.getElementById('move-caption-stage'),
+            document.getElementById('move-caption-drag'),
+            document.getElementById('move-caption-readout'),
+            () => { movePosSelect.value = 'custom'; moveSaveBtn.disabled = false; }
+        );
+        movePosSelect.addEventListener('change', () => {
+            if (movePosSelect.value === 'custom') return;
+            moveCaption.setPreset(movePosSelect.value);
+            moveSaveBtn.disabled = false;
+        });
+
+        async function openCaptionEditor(clipId) {
+            captionClipId = clipId;
+            moveSaveBtn.disabled = true;
+            document.getElementById('caption-modal').classList.add('is-visible');
+            if (window.lucide) lucide.createIcons();
+            const wordsReq = fetch(`/clips/${clipId}/transcript`).then(r => r.ok ? r.json() : { words: [] }).catch(() => ({ words: [] }));
+            const info = await loadCaptionStage(clipId, moveCaption,
+                { stage: 'move-caption-stage', drag: 'move-caption-drag', status: 'move-caption-status' }, movePosSelect);
+            if (!info || captionClipId !== clipId) return;
+            const words = (await wordsReq).words || [];
+            renderCaptionPreview(document.getElementById('move-caption-drag'), words, info.layout, info.style, info.font);
+            moveCaption.place();
+        }
+
+        function closeCaptionEditor() {
+            captionClipId = null;
+            document.getElementById('caption-modal').classList.remove('is-visible');
+        }
+
+        async function saveCaptionMove() {
+            if (!captionClipId) return;
+            const clipId = captionClipId;
+            moveSaveBtn.disabled = true;
+            moveSaveBtn.textContent = '⏳ RE-RENDERING...';
+            try {
+                const res = await fetch(`/clips/${clipId}/caption`, {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify(captionPayload(moveCaption))
+                });
+                const data = await res.json();
+                if (!res.ok || !data.success) throw new Error(data.error || data.message || 'Could not move the captions');
+                pollClipReRender(clipId);
+            } catch (err) {
+                alert(err.message);
+                moveSaveBtn.disabled = false;
+                moveSaveBtn.textContent = 'SAVE & RE-RENDER';
+            }
+        }
+
         // ─── 8. Background Polling for Active Video Streams ───
         const activeVideos = @json($videos->filter(fn($v) => !in_array(strtolower($v->status), ['completed', 'failed']))->pluck('id')->values());
         activeVideos.forEach(videoId => pollVideoStatus(videoId));
@@ -1852,6 +2197,7 @@
             if (e.key === 'Escape') {
                 closeCinemaModal();
                 closeSubsEditor();
+                closeCaptionEditor();
             }
         });
 

@@ -17,6 +17,8 @@ Route::get('/clips/{clip}/transcript', [VideoController::class, 'getTranscript']
 Route::get('/clips/{clip}/status', [VideoController::class, 'getClipStatus'])->name('clips.status');
 Route::post('/clips/{clip}/re-render', [VideoController::class, 'reRenderClip'])->name('clips.transcript.update');
 Route::post('/clips/{clip}/facecam', [VideoController::class, 'adjustFacecam'])->name('clips.facecam.update');
+Route::get('/clips/{clip}/caption', [VideoController::class, 'captionEditor'])->name('clips.caption.get');
+Route::post('/clips/{clip}/caption', [VideoController::class, 'moveCaption'])->name('clips.caption.update');
 Route::post('/settings/api-keys', [ApiKeyController::class, 'update'])->name('settings.api-keys');
 
 Route::get('/watchlist', [WatchlistController::class, 'index'])->name('watchlist');

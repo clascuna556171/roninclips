@@ -20,9 +20,31 @@ if sys.platform == 'win32':
 sys.path.insert(0, os.path.dirname(__file__))
 from db_helper import get_db, DatabaseUnavailable
 from hw_accel import detect_ffmpeg_encoder
-from subtitles import generate_ass_subtitles, format_ass_time, ffmpeg_escape_path
+from subtitles import generate_ass_subtitles, format_ass_time, ffmpeg_escape_path, caption_xy, settings_caption_xy
 
 CLIP_ID = sys.argv[1] if len(sys.argv) > 1 else None
+# `--preview-frame`: write one caption-free frame of the rendered layout (clip_<id>_preview.jpg) for the
+# caption editor, then exit without re-rendering.
+PREVIEW_FRAME = '--preview-frame' in sys.argv[2:]
+CLI_ARGS = [a for a in sys.argv[2:] if a != '--preview-frame']
+
+
+def resolve_caption(settings, clip_caption, gaming, cli_position=None):
+    """(style, position preset, pos_xy) for this clip.
+    Saved per-clip choices (`crop_coordinates_json.caption`) win over the job settings;
+    the gaming layout keeps bottom captions unless the clip has its own position."""
+    clip_caption = clip_caption if isinstance(clip_caption, dict) else {}
+    style = clip_caption.get('style') or settings.get('caption_style', 'yellow_pop')
+    clip_xy = caption_xy((clip_caption.get('x'), clip_caption.get('y')))
+    if clip_xy:
+        return style, 'bottom', clip_xy
+    if clip_caption.get('position'):
+        return style, clip_caption['position'], None
+    if cli_position:
+        return style, cli_position, None
+    if gaming:
+        return style, 'bottom', None
+    return style, settings.get('caption_position', 'bottom'), settings_caption_xy(settings)
 
 def run_ffmpeg(cmd, **kwargs):
     kwargs.setdefault('shell', isinstance(cmd, str))
@@ -63,12 +85,8 @@ if __name__ == "__main__":
             pass
 
     # CLI style & position overrides if specified
-    if len(sys.argv) > 2 and sys.argv[2].strip():
-        SETTINGS['caption_style'] = sys.argv[2].strip()
-    POSITION_OVERRIDDEN = False
-    if len(sys.argv) > 3 and sys.argv[3].strip():
-        SETTINGS['caption_position'] = sys.argv[3].strip()
-        POSITION_OVERRIDDEN = True
+    CLI_STYLE = CLI_ARGS[0].strip() if len(CLI_ARGS) > 0 and CLI_ARGS[0].strip() else None
+    CLI_POSITION = CLI_ARGS[1].strip() if len(CLI_ARGS) > 1 and CLI_ARGS[1].strip() else None
             
     temp_dir = os.path.join(os.path.dirname(__file__), '..', 'storage/app')
     output_dir = os.path.join(temp_dir, 'public')
@@ -107,18 +125,25 @@ if __name__ == "__main__":
     render_w = 1080 if SETTINGS['output_format'] == '9:16' else 1920
     render_h = 1920 if SETTINGS['output_format'] == '9:16' else 1080
 
-    caption_position = SETTINGS.get('caption_position', 'bottom')
-    if gaming_info and not POSITION_OVERRIDDEN:
-        caption_position = 'bottom'
+    caption_style, caption_position, caption_pos_xy = resolve_caption(
+        SETTINGS, crop_info.get('caption') if crop_info else None, bool(gaming_info), CLI_POSITION)
+    if CLI_STYLE:
+        caption_style = CLI_STYLE
+
+    if PREVIEW_FRAME:
+        all_words = None  # the editor draws the caption itself
+        if os.path.exists(ass_path):
+            os.remove(ass_path)
 
     if all_words:
         generate_ass_subtitles(
             all_words, ass_path, render_w, render_h,
-            style_preset=SETTINGS.get('caption_style', 'yellow_pop'),
+            style_preset=caption_style,
             font_family=SETTINGS.get('caption_font', 'Arial Black'),
             position=caption_position,
             layout_mode=SETTINGS.get('caption_layout', 'two_line'),
-            mask_swears=bool(SETTINGS.get('clean_captions'))
+            mask_swears=bool(SETTINGS.get('clean_captions')),
+            pos_xy=caption_pos_xy
         )
 
     use_split_screen = crop_info.get('use_split_screen', False) if crop_info else False
@@ -149,6 +174,21 @@ if __name__ == "__main__":
             gaming_info.get('cam_box')
         )
 
+    if PREVIEW_FRAME:
+        # Output seeking (after -i) so time-based crop/zoom expressions see the real time
+        dur = run_ffmpeg(['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                          '-of', 'default=noprint_wrappers=1:nokey=1', intermediate_clip])
+        try:
+            seek = min(float(dur.stdout.strip()) * 0.4, 8.0)
+        except ValueError:
+            seek = 1.0
+        preview_path = os.path.join(output_dir, f"clip_{CLIP_ID}_preview.jpg")
+        if os.path.exists(preview_path):
+            os.remove(preview_path)
+        out_args = ['-ss', f"{seek:.2f}", '-frames:v', '1', '-q:v', '3', '-an', '-y', preview_path]
+    else:
+        out_args = enc_args + ['-c:a', 'copy', '-y', output_clip]
+
     if use_split_screen and saved_split_fc:
         # Re-apply saved split-screen / gaming complex filter with updated subtitles
         extra_vf = []
@@ -162,10 +202,8 @@ if __name__ == "__main__":
             extra_chain = ",".join(extra_vf)
             full_fc = saved_split_fc.replace('[outv]', f'[_splitraw];[_splitraw]{extra_chain}[outv]')
         
-        run_ffmpeg([
-            'ffmpeg', '-i', intermediate_clip, '-filter_complex', full_fc,
-            '-map', '[outv]', '-map', '0:a'
-        ] + enc_args + ['-c:a', 'copy', '-y', output_clip])
+        maps = ['-map', '[outv]'] + ([] if PREVIEW_FRAME else ['-map', '0:a'])
+        run_ffmpeg(['ffmpeg', '-i', intermediate_clip, '-filter_complex', full_fc] + maps + out_args)
     else:
         if saved_crop_filter:
             # Re-use exact face tracking crop
@@ -192,9 +230,13 @@ if __name__ == "__main__":
             
         vf = ",".join(filters) if filters else "null"
         
-        run_ffmpeg([
-            'ffmpeg', '-i', intermediate_clip, '-vf', vf
-        ] + enc_args + ['-c:a', 'copy', '-y', output_clip])
+        run_ffmpeg(['ffmpeg', '-i', intermediate_clip, '-vf', vf] + out_args)
+
+    if PREVIEW_FRAME:
+        db.close()
+        ok = os.path.exists(preview_path)
+        print(f"Preview frame {'written' if ok else 'FAILED'} for clip {CLIP_ID}")
+        sys.exit(0 if ok else 1)
 
     # Re-apply Background Music with Auto-Ducking if enabled in video settings
     if SETTINGS.get('background_music') and SETTINGS.get('bgm_path') and os.path.exists(output_clip):

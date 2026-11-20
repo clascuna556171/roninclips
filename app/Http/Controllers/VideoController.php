@@ -100,7 +100,12 @@ class VideoController extends Controller
             'output_format' => $request->input('output_format', '9:16'),
             'caption_style' => $request->input('caption_style', 'yellow_pop'),
             'caption_font' => $request->input('caption_font', 'Arial Black'),
-            'caption_position' => $request->input('caption_position', 'bottom'),
+            // "custom" (dragged) is not a preset; caption_x/y carry the spot
+            'caption_position' => in_array($request->input('caption_position'), ['bottom', 'center', 'top'], true)
+                ? $request->input('caption_position') : 'bottom',
+            // Spot dragged in the sidebar simulator (caption centre, 0..1 of the frame); null = use the preset
+            'caption_x' => self::captionFraction($request->input('caption_x')),
+            'caption_y' => self::captionFraction($request->input('caption_y')),
             'caption_layout' => $request->input('caption_layout', 'two_line'),
             'transition_speed' => (float) $request->input('transition_speed', 0.25),
             'target_clip_count' => (int) $request->input('target_clip_count', 5),
@@ -337,6 +342,7 @@ class VideoController extends Controller
             storage_path("app/clip_{$clip->id}.ass"),
             storage_path("logs/re_render_{$clip->id}.log"),
             storage_path("app/public/clip_{$clip->id}_frame.jpg"),
+            storage_path("app/public/clip_{$clip->id}_preview.jpg"),
         ];
 
         foreach ($filesToDelete as $file) {
@@ -429,31 +435,149 @@ class VideoController extends Controller
             'words.*.end' => 'required|numeric|min:0',
             'caption_style' => 'nullable|string|in:yellow_pop,neon_cyan,bold_white,hormozi_box,karaoke_green,cyber_pink,fire_gold,electric_violet',
             'caption_position' => 'nullable|string|in:bottom,center,top',
+            'caption_x' => 'nullable|numeric|min:0|max:1|required_with:caption_y',
+            'caption_y' => 'nullable|numeric|min:0|max:1|required_with:caption_x',
         ]);
 
         // Save updated words
         $jsonPath = storage_path("app/clip_{$clip->id}_words.json");
         file_put_contents($jsonPath, json_encode($request->words, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
 
-        // Update clip status
+        // Style and position are kept on the clip, so a later re-render (facecam, Move captions) keeps them
+        $this->saveClipCaption($clip, $request);
         $clip->status = 'rendering';
         $clip->save();
 
-        // Optional style & position overrides
-        $captionStyle = $request->input('caption_style', '');
-        $captionPos = $request->input('caption_position', '');
+        $this->dispatchReRender($clip);
 
-        $extraArgs = '';
-        if (!empty($captionStyle)) {
-            $extraArgs .= ' ' . escapeshellarg($captionStyle);
-            if (!empty($captionPos)) {
-                $extraArgs .= ' ' . escapeshellarg($captionPos);
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Everything the caption drag editor needs for one clip: a caption-free frame of the rendered
+     * layout, the clip's current style/position and the job's caption settings.
+     */
+    public function captionEditor($id)
+    {
+        $clip = \App\Models\VideoClip::findOrFail($id);
+        $settings = $clip->longVideo?->processing_settings ?? [];
+        $settings = is_array($settings) ? $settings : (json_decode((string) $settings, true) ?: []);
+        $crop = json_decode($clip->crop_coordinates_json ?? '', true);
+        $crop = is_array($crop) ? $crop : [];
+        $caption = is_array($crop['caption'] ?? null) ? $crop['caption'] : [];
+        $gaming = !empty($crop['gaming_layout']);
+
+        // Same order as re_render_clip.resolve_caption: the clip's own choice, then the job (gaming = bottom)
+        $x = $caption['x'] ?? null;
+        $y = $caption['y'] ?? null;
+        $position = $caption['position'] ?? null;
+        if ($x === null && $position === null) {
+            if (!$gaming && isset($settings['caption_x'], $settings['caption_y'])) {
+                [$x, $y] = [$settings['caption_x'], $settings['caption_y']];
+            } else {
+                $position = $gaming ? 'bottom' : ($settings['caption_position'] ?? 'bottom');
             }
         }
 
-        $this->dispatchReRender($clip, $extraArgs);
+        $frame = $this->captionPreviewFrame($clip);
+
+        return response()->json([
+            'frame_url' => $frame ? asset("storage/clip_{$clip->id}_preview.jpg") . '?v=' . filemtime($frame) : null,
+            'style' => $caption['style'] ?? ($settings['caption_style'] ?? 'yellow_pop'),
+            'font' => $settings['caption_font'] ?? 'Arial Black',
+            'layout' => $settings['caption_layout'] ?? 'two_line',
+            'output_format' => $settings['output_format'] ?? '9:16',
+            'x' => $x !== null ? (float) $x : null,
+            'y' => $y !== null ? (float) $y : null,
+            'position' => $position,
+        ]);
+    }
+
+    /** Move a finished clip's captions (dragged spot or a preset) and re-render only that clip. */
+    public function moveCaption(Request $request, $id)
+    {
+        $clip = \App\Models\VideoClip::findOrFail($id);
+        $request->validate([
+            'caption_position' => 'nullable|string|in:bottom,center,top|required_without:caption_x',
+            'caption_x' => 'nullable|numeric|min:0|max:1|required_with:caption_y',
+            'caption_y' => 'nullable|numeric|min:0|max:1|required_with:caption_x',
+        ]);
+        if (!file_exists(storage_path("app/clip_{$clip->id}_words.json"))) {
+            return response()->json(['error' => 'This clip has no captions to move.'], 422);
+        }
+
+        $this->saveClipCaption($clip, $request);
+        $clip->status = 'rendering';
+        $clip->save();
+
+        $this->dispatchReRender($clip);
 
         return response()->json(['success' => true]);
+    }
+
+    /** Put caption style/position on the clip (crop_coordinates_json.caption). The caller saves. */
+    private function saveClipCaption(\App\Models\VideoClip $clip, Request $request): void
+    {
+        $crop = json_decode($clip->crop_coordinates_json ?? '', true);
+        $crop = is_array($crop) ? $crop : [];
+        $caption = is_array($crop['caption'] ?? null) ? $crop['caption'] : [];
+
+        if ($request->filled('caption_style')) {
+            $caption['style'] = $request->input('caption_style');
+        }
+        $x = self::captionFraction($request->input('caption_x'));
+        $y = self::captionFraction($request->input('caption_y'));
+        if ($x !== null && $y !== null) {
+            $caption['x'] = $x;
+            $caption['y'] = $y;
+            unset($caption['position']);
+        } elseif ($request->filled('caption_position')) {
+            $caption['position'] = $request->input('caption_position');
+            unset($caption['x'], $caption['y']);
+        }
+
+        if ($caption) {
+            $crop['caption'] = $caption;
+            $clip->crop_coordinates_json = json_encode($crop);
+        }
+    }
+
+    /** A dragged caption coordinate as a 0.05..0.95 fraction (kept off the very edge), or null. */
+    public static function captionFraction($value): ?float
+    {
+        if ($value === null || $value === '' || !is_numeric($value)) {
+            return null;
+        }
+        return round(min(0.95, max(0.05, (float) $value)), 4);
+    }
+
+    /** A caption-free frame of the rendered layout, made by re_render_clip.py --preview-frame when missing or stale. */
+    private function captionPreviewFrame(\App\Models\VideoClip $clip): ?string
+    {
+        $path = storage_path("app/public/clip_{$clip->id}_preview.jpg");
+        $output = $clip->output_path ? base_path($clip->output_path) : null;
+        $fresh = file_exists($path) && (!$output || !file_exists($output) || filemtime($path) >= filemtime($output));
+        if ($fresh || app()->runningUnitTests()) {
+            return file_exists($path) ? $path : null;
+        }
+
+        // Plain shell like dispatchReRender: under the web server, Symfony Process does not pass PATH on Windows.
+        // One frame through the clip's filters takes a few seconds, so this runs synchronously.
+        $cmd = escapeshellarg($this->getPythonBinary()) . ' ' . escapeshellarg(base_path('processor/re_render_clip.py'))
+            . ' ' . (int) $clip->id . ' --preview-frame 2>&1';
+        $out = [];
+        $code = 0;
+        exec($cmd, $out, $code);
+        clearstatcache(true, $path);
+
+        if (!file_exists($path)) {
+            \Illuminate\Support\Facades\Log::warning("Caption preview frame failed for clip {$clip->id}", [
+                'exit' => $code,
+                'output' => mb_substr(implode("\n", $out), -1500),
+            ]);
+            return null;
+        }
+        return $path;
     }
 
     /**

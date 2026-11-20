@@ -97,12 +97,34 @@ def ffmpeg_escape_path(path):
     return p
 
 
+def caption_xy(value):
+    """(x, y) caption centre as 0..1 fractions, clamped to 0.05..0.95; None when not a usable pair."""
+    try:
+        x, y = (float(v) for v in value)
+    except (TypeError, ValueError):
+        return None
+    if x != x or y != y:  # NaN
+        return None
+    clamp = lambda v: min(0.95, max(0.05, v))
+    return clamp(x), clamp(y)
+
+
+def settings_caption_xy(settings):
+    """The dragged caption spot from job/clip settings (`caption_x`, `caption_y`), or None."""
+    if not settings or settings.get('caption_x') is None or settings.get('caption_y') is None:
+        return None
+    return caption_xy((settings['caption_x'], settings['caption_y']))
+
+
 def generate_ass_subtitles(words, output_path, output_w=1080, output_h=1920,
                             style_preset='yellow_pop', font_family='Arial Black',
-                            position='bottom', layout_mode='two_line', mask_swears=False):
+                            position='bottom', layout_mode='two_line', mask_swears=False,
+                            pos_xy=None):
     """
     Generate an ASS subtitle file with word-by-word highlighting.
     Slurs are always masked; `mask_swears` also masks swear words.
+    `pos_xy` = (x, y) fractions of the frame for the caption centre (dragged in the editor);
+    it overrides the `position` preset.
     """
     style_cfg = PALETTES.get(style_preset, PALETTES['yellow_pop'])
 
@@ -126,6 +148,13 @@ def generate_ass_subtitles(words, output_path, output_w=1080, output_h=1920,
     else:  # 'bottom' default
         alignment = 2
         margin_v = int(output_h * 0.14)
+
+    pos_tag = ''
+    xy = caption_xy(pos_xy)
+    if xy:
+        alignment = 5
+        margin_v = 0
+        pos_tag = "{\\pos(%d,%d)}" %(round(xy[0] * output_w), round(xy[1] * output_h))
 
     outline_val = style_cfg['outline_size']
     shadow_val = style_cfg['shadow_size']
@@ -181,7 +210,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             if text.strip():
                 start_str = format_ass_time(event_start)
                 end_str = format_ass_time(event_end)
-                events.append(f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{text}")
+                events.append(f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{pos_tag}{text}")
 
     with open(output_path, 'w', encoding='utf-8-sig') as f:
         f.write(ass_header)

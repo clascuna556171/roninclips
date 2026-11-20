@@ -101,7 +101,7 @@ from audio_mixer import detect_speech_regions, mix_background_music, normalize_l
 from transitions import apply_whip_pan_transitions
 from split_screen import get_split_screen_filter
 from gaming_layout import get_gaming_layout
-from subtitles import generate_ass_subtitles, format_ass_time, ffmpeg_escape_path
+from subtitles import generate_ass_subtitles, format_ass_time, ffmpeg_escape_path, settings_caption_xy
 
 
 # ──────────────────────────────────────────────
@@ -904,7 +904,9 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
                     # Gaming layout: captions always sit in the blurred area under the gameplay
                     position='bottom' if use_gaming_layout else SETTINGS.get('caption_position', 'bottom'),
                     layout_mode=SETTINGS.get('caption_layout', 'two_line'),
-                    mask_swears=bool(SETTINGS.get('clean_captions'))
+                    mask_swears=bool(SETTINGS.get('clean_captions')),
+                    # Spot dragged in the sidebar simulator (not for the gaming layout, see above)
+                    pos_xy=None if use_gaming_layout else settings_caption_xy(SETTINGS)
                 )
                 print(f"  [Clip #{clip_id}] Generated {num_events} caption events.")
 
