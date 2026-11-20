@@ -31,6 +31,7 @@ MAX_FACE_FRACTION = 0.20   # Faces wider than 20% of frame width are not overlay
 MIN_PRESENCE = 0.5         # Cam face must appear in at least half the sampled frames
 MAX_DRIFT_FRACTION = 0.06  # Cam face centre may drift (std dev) at most 6% of frame width
 MIN_CONFIDENCE = 0.7       # Low-confidence hits are mostly patterns in the gameplay
+MIN_BORDER_SIDES = 2       # Fewer border lines around the face = full-screen webcam, not an overlay
 
 
 def _even(n):
@@ -223,66 +224,143 @@ def build_gaming_filter(input_w, input_h, cam_box=None):
     ])
 
 
-def _snap_edge(band, axis, origin, expected, nearest_high):
+def _border_lines(band, axis, origin, nearest_high, limit=6):
     """
-    Find a border line in a 2-D slice of an edge map.
+    Candidate border lines in a 2-D slice of an edge map.
 
     axis=0: candidate lines are columns (vertical border); axis=1: rows.
-    A real webcam border runs along the whole side, so each candidate is scored
-    by coverage: the share of pixels along it that are strong edges. Partial
-    lines (scoreboards, HUD text) score low. Going outward from the face, the
-    first full line is the cam border, so among qualifying lines the one nearest
-    the face wins (nearest_high=True: the face is on the high-index side).
-    Returns the snapped position, or `expected` when no line covers 60% of the side.
+    A real webcam border runs along the whole side, so each line is scored by
+    coverage: the share of pixels along it that are strong edges. Partial lines
+    (scoreboards, HUD text) score low. Neighbouring qualifying lines are one
+    thick line; each keeps the index nearest the face (nearest_high=True: the
+    face is on the high-index side). Returns positions nearest the face first.
     """
     import numpy as np
     if band.size == 0 or min(band.shape) < 3:
-        return expected
+        return []
     threshold = max(20.0, 4.0 * float(np.median(band)))
     coverage = (band > threshold).mean(axis=axis)
-    lines = np.flatnonzero(coverage >= 0.6)
-    if lines.size == 0:
-        return expected
-    return origin + int(lines.max() if nearest_high else lines.min())
+    idx = np.flatnonzero(coverage >= 0.6)
+    if idx.size == 0:
+        return []
+    groups = np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1)
+    lines = [origin + int(g.max() if nearest_high else g.min()) for g in groups]
+    lines.sort(reverse=nearest_high)
+    return lines[:limit]
 
 
-def refine_cam_box(box, edges_x, edges_y, scale, input_w, input_h):
+def _aspect_error(w, h):
+    """How far w:h is from the usual webcam shapes (16:9 or 4:3), as |log ratio|."""
+    import math
+    if w <= 0 or h <= 0:
+        return 99.0
+    r = w / h
+    return min(abs(math.log(r / (16 / 9))), abs(math.log(r / (4 / 3))))
+
+
+def snap_cam_box(box, edges_x, edges_y, scale, input_w, input_h):
     """
     Snap a rough cam box to the webcam overlay's border.
 
-    edges_x / edges_y are time-averaged |d/dx| and |d/dy| edge maps of the
-    sampled frames at 1/scale resolution. A webcam border stays still while
-    gameplay moves, so after averaging it is one of the strongest straight edges
-    near the face. Each side moves only when there is a clear peak.
+    edges_x / edges_y are |d/dx| and |d/dy| edge maps of the sampled frames,
+    combined over time by median (combine_frame_maps), at 1/scale resolution.
+    A webcam border is there in every frame while gameplay edges move, so the
+    median keeps the border and drops most gameplay. The search reaches ~0.8
+    box-sizes outward because the rough box from the face can be much smaller
+    than a big cam.
+
+    Still lines inside the cam (door frames, shelves) survive the median too, so
+    "nearest line wins" is not enough. Each side collects its candidate lines,
+    plus the frame edge when the search reaches it (cams often sit in a corner
+    with no border on the frame side), plus "no line" (keep the rough side).
+    The chosen box has the most sides on a line, then the most usual webcam
+    shape (16:9 / 4:3, within ~4%), then real lines over frame edges, then the
+    least movement from the rough box.
+    A box over 60% of the frame in either direction is not an overlay.
+
+    Returns (box, border_sides): the [x, y, w, h] box in source pixels and how
+    many sides sit on a real border line found in the image (frame edges and
+    unsnapped sides do not count; 0 = no border found).
     """
+    from itertools import product
     H, W = edges_x.shape
     x, y, w, h = [v / scale for v in box]
 
-    for _ in range(2):
-        r0, r1 = int(max(0, y + h * 0.15)), int(min(H, y + h * 0.85))
-        if r1 - r0 >= 4:
-            lo, hi = int(max(0, x - w * 0.4)), int(min(W, x + w * 0.3))
-            left = _snap_edge(edges_x[r0:r1, lo:hi], 0, lo, x, True)
-            lo, hi = int(max(0, x + w * 0.7)), int(min(W, x + w * 1.4))
-            right = _snap_edge(edges_x[r0:r1, lo:hi], 0, lo, x + w, False)
-            if right - left > w * 0.4:
-                x, w = left, right - left
+    def side(lines_found, rough, at_frame_edge, frame_pos):
+        options = [(p, 'line') for p in lines_found]
+        if at_frame_edge:
+            options.append((frame_pos, 'frame'))
+        options.append((rough, None))
+        return options
 
-        c0, c1 = int(max(0, x + w * 0.15)), int(min(W, x + w * 0.85))
-        if c1 - c0 >= 4:
-            lo, hi = int(max(0, y - h * 0.4)), int(min(H, y + h * 0.3))
-            top = _snap_edge(edges_y[lo:hi, c0:c1], 1, lo, y, True)
-            lo, hi = int(max(0, y + h * 0.7)), int(min(H, y + h * 1.4))
-            bottom = _snap_edge(edges_y[lo:hi, c0:c1], 1, lo, y + h, False)
-            if bottom - top > h * 0.4:
-                y, h = top, bottom - top
+    r0, r1 = int(max(0, y + h * 0.15)), int(min(H, y + h * 0.85))
+    c0, c1 = int(max(0, x + w * 0.15)), int(min(W, x + w * 0.85))
+
+    lo_l, hi_l = int(max(0, x - w * 0.8)), int(min(W, x + w * 0.3))
+    lo_r, hi_r = int(max(0, x + w * 0.7)), int(min(W, x + w * 1.8))
+    lo_t, hi_t = int(max(0, y - h * 0.8)), int(min(H, y + h * 0.3))
+    lo_b, hi_b = int(max(0, y + h * 0.7)), int(min(H, y + h * 1.8))
+
+    rows_ok, cols_ok = r1 - r0 >= 4, c1 - c0 >= 4
+    lefts = side(_border_lines(edges_x[r0:r1, lo_l:hi_l], 0, lo_l, True) if rows_ok else [],
+                 x, lo_l == 0, 0)
+    rights = side(_border_lines(edges_x[r0:r1, lo_r:hi_r], 0, lo_r, False) if rows_ok else [],
+                  x + w, hi_r == W, W)
+    tops = side(_border_lines(edges_y[lo_t:hi_t, c0:c1], 1, lo_t, True) if cols_ok else [],
+                y, lo_t == 0, 0)
+    bottoms = side(_border_lines(edges_y[lo_b:hi_b, c0:c1], 1, lo_b, False) if cols_ok else [],
+                   y + h, hi_b == H, H)
+
+    best = None
+    for (l, lk), (r, rk), (t, tk), (b, bk) in product(lefts, rights, tops, bottoms):
+        bw, bh = r - l, b - t
+        if bw <= w * 0.4 or bh <= h * 0.4 or bw > W * 0.6 or bh > H * 0.6:
+            continue
+        kinds = (lk, rk, tk, bk)
+        lines = sum(k == 'line' for k in kinds)
+        # A frame edge only backs up a box that has a real border somewhere
+        bounded = lines + (sum(k == 'frame' for k in kinds) if lines else 0)
+        aspect = _aspect_error(bw, bh)
+        moved = abs(l - x) + abs(r - x - w) + abs(t - y) + abs(b - y - h)
+        score = (bounded, -(0.0 if aspect < 0.04 else aspect), lines, -moved)
+        if best is None or score > best[0]:
+            best = (score, (l, t, bw, bh), lines)
+
+    if best is None:
+        return clamp_box(box, input_w, input_h), 0
+    _, (x, y, w, h), border_sides = best
 
     # Step just inside the border line so it is not part of the panel
     inset = 2
-    return clamp_box(
+    snapped = clamp_box(
         [(x + inset) * scale, (y + inset) * scale, (w - inset * 2) * scale, (h - inset * 2) * scale],
         input_w, input_h,
     )
+    return snapped, border_sides
+
+
+def refine_cam_box(box, edges_x, edges_y, scale, input_w, input_h):
+    """snap_cam_box without the side count."""
+    return snap_cam_box(box, edges_x, edges_y, scale, input_w, input_h)[0]
+
+
+def combine_frame_maps(frame_maps):
+    """Per-pixel median over time of a list of same-sized 2-D maps."""
+    import numpy as np
+    return np.median(np.stack(frame_maps), axis=0).astype(np.float32)
+
+
+def has_gameplay(border_sides):
+    """
+    A webcam overlay sits on top of gameplay, so at least two of its sides meet
+    gameplay along a still border line (a corner cam has two such sides, the
+    other two are the frame edge). Fewer than two means a full-screen webcam,
+    where a cam panel would show the streamer twice.
+
+    Motion around the face is no help here: a handheld IRL stream moves almost
+    everywhere (97% on a real Speed IRL clip), just like gameplay.
+    """
+    return border_sides >= MIN_BORDER_SIDES
 
 
 # ──────────────────────────────────────────────
@@ -303,7 +381,7 @@ def sample_faces(video_path, duration, sample_frames=SAMPLE_FRAMES):
     Detect faces in evenly spaced frames, scanning each frame in overlapping tiles.
 
     Returns (face_samples, frames_read, (width, height), edges) where edges is
-    (edges_x, edges_y, scale): time-averaged edge maps at 1/scale resolution.
+    (edges_x, edges_y, scale): median-over-time edge maps at 1/scale resolution.
     """
     import cv2
     import numpy as np
@@ -334,7 +412,7 @@ def sample_faces(video_path, duration, sample_frames=SAMPLE_FRAMES):
     samples = []
     frames_read = 0
     edge_scale = 2
-    edges_x = edges_y = None
+    gx_frames, gy_frames = [], []
     duration = max(0.5, float(duration))
     with mp_vision.FaceDetector.create_from_options(options) as detector:
         for i in range(sample_frames):
@@ -346,10 +424,8 @@ def sample_faces(video_path, duration, sample_frames=SAMPLE_FRAMES):
             frames_read += 1
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             gray = cv2.resize(gray, (width // edge_scale, height // edge_scale)).astype(np.float32)
-            gx = np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3))
-            gy = np.abs(cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3))
-            edges_x = gx if edges_x is None else edges_x + gx
-            edges_y = gy if edges_y is None else edges_y + gy
+            gx_frames.append(np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)))
+            gy_frames.append(np.abs(cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)))
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             for oy in ys:
                 for ox in xs:
@@ -369,7 +445,7 @@ def sample_faces(video_path, duration, sample_frames=SAMPLE_FRAMES):
     cap.release()
     edges = None
     if frames_read:
-        edges = (edges_x / frames_read, edges_y / frames_read, edge_scale)
+        edges = (combine_frame_maps(gx_frames), combine_frame_maps(gy_frames), edge_scale)
     return samples, frames_read, (width, height), edges
 
 
@@ -379,7 +455,9 @@ def get_gaming_layout(video_path, duration):
 
     Returns dict:
         {'filter_complex', 'cam_box' ([x,y,w,h] or None), 'input_w', 'input_h', 'auto_detected'}
-    or None when the source is not landscape (layout does not apply).
+    or None when the layout does not apply: the source is not landscape, or it
+    is a full-screen webcam with no gameplay (the engine then falls back to its
+    normal split-screen / smart crop).
     """
     from face_tracker import get_video_info
 
@@ -396,8 +474,11 @@ def get_gaming_layout(video_path, duration):
             cam_box = estimate_cam_box(face, input_w, input_h)
             if edges is not None:
                 rough = cam_box
-                cam_box = refine_cam_box(rough, edges[0], edges[1], edges[2], input_w, input_h)
-                print(f"  [gaming_layout] Cam box snapped to border: {rough} -> {cam_box}")
+                cam_box, sides = snap_cam_box(rough, edges[0], edges[1], edges[2], input_w, input_h)
+                print(f"  [gaming_layout] Cam box snapped to border ({sides}/4 border lines): {rough} -> {cam_box}")
+                if not has_gameplay(sides):
+                    print("  [gaming_layout] Face has no overlay border: full-screen webcam, skipping gaming layout")
+                    return None
             print(f"  [gaming_layout] Facecam found in {face['frames']}/{frames_read} frames, box={cam_box}")
         else:
             print(f"  [gaming_layout] No stable facecam found ({len(samples)} face hits in {frames_read} frames), using gameplay only")

@@ -118,6 +118,88 @@ class TestBorderSnap(unittest.TestCase):
         self.assertAlmostEqual(box[0], 1404, delta=4)
         self.assertAlmostEqual(box[2], 452, delta=4)
 
+    def test_finds_border_well_outside_a_too_small_rough_box(self):
+        import numpy as np
+        from gaming_layout import refine_cam_box
+        ex = np.zeros((540, 960), dtype=np.float32)
+        ey = np.zeros((540, 960), dtype=np.float32)
+        # Big cam: half-res x 600..940, y 15..265; rough box only covers x 700..880
+        ex[15:266, 600] = ex[15:266, 940] = 100
+        ey[15, 600:941] = ey[265, 600:941] = 100
+        x, y, w, h = refine_cam_box([1400, 120, 360, 300], ex, ey, 2, W, H)
+        self.assertAlmostEqual(x, 1204, delta=8)
+        self.assertAlmostEqual(x + w, 1876, delta=8)
+        self.assertAlmostEqual(y, 34, delta=8)
+        self.assertAlmostEqual(y + h, 526, delta=8)
+
+    def test_snap_reports_how_many_sides_hit_a_border(self):
+        import numpy as np
+        from gaming_layout import snap_cam_box
+        ex, ey = self._edge_maps()
+        _, sides = snap_cam_box([1400, 90, 460, 330], ex, ey, 2, W, H)
+        self.assertEqual(sides, 4)
+        flat = np.zeros((540, 960), dtype=np.float32)
+        _, sides = snap_cam_box([1400, 90, 460, 330], flat, flat, 2, W, H)
+        self.assertEqual(sides, 0)
+
+
+class TestFrameMaps(unittest.TestCase):
+    def test_median_keeps_still_border_and_drops_passing_edges(self):
+        import numpy as np
+        from gaming_layout import combine_frame_maps
+        frames = []
+        for i in range(12):
+            m = np.zeros((20, 40), dtype=np.float32)
+            m[:, 10] = 100                 # webcam border, every frame
+            m[:, 20 + i] = 400             # gameplay edge, a new spot each frame
+            frames.append(m)
+        combined = combine_frame_maps(frames)
+        self.assertEqual(float(combined[5, 10]), 100.0)
+        self.assertLess(float(combined[5, 25]), 20.0)   # mean would be ~33
+
+
+class TestGameplayCheck(unittest.TestCase):
+    def test_needs_two_border_lines_to_count_as_overlay(self):
+        from gaming_layout import has_gameplay
+        self.assertFalse(has_gameplay(0))   # full-screen webcam, nothing around the face
+        self.assertFalse(has_gameplay(1))   # one stray line (doorframe, scoreboard edge)
+        self.assertTrue(has_gameplay(2))    # corner cam: two sides meet gameplay
+        self.assertTrue(has_gameplay(4))
+
+    def test_corner_cam_without_border_uses_frame_edges(self):
+        import numpy as np
+        from gaming_layout import snap_cam_box
+        ex = np.zeros((540, 960), dtype=np.float32)
+        ey = np.zeros((540, 960), dtype=np.float32)
+        # Top-right corner cam, half-res x 720..960, y 0..135: seams only on left and bottom
+        ex[0:136, 720] = 100
+        ey[135, 720:960] = 100
+        (x, y, w, h), sides = snap_cam_box([1560, 20, 300, 220], ex, ey, 2, W, H)
+        self.assertEqual(sides, 2)
+        self.assertAlmostEqual(x, 1444, delta=8)
+        self.assertAlmostEqual(x + w, 1916, delta=8)
+        self.assertAlmostEqual(y, 4, delta=8)
+        self.assertAlmostEqual(y + h, 266, delta=8)
+
+    def test_frame_edge_alone_does_not_count_as_a_border(self):
+        import numpy as np
+        from gaming_layout import snap_cam_box
+        flat = np.zeros((540, 960), dtype=np.float32)
+        _, sides = snap_cam_box([1560, 20, 300, 220], flat, flat, 2, W, H)
+        self.assertEqual(sides, 0)
+
+    def test_still_line_inside_cam_loses_to_the_real_border(self):
+        import numpy as np
+        from gaming_layout import snap_cam_box
+        ex = np.zeros((540, 960), dtype=np.float32)
+        ey = np.zeros((540, 960), dtype=np.float32)
+        # 16:9 cam at half-res x 20..300, y 20..178, plus a door frame inside it at x=213
+        ex[20:179, 20] = ex[20:179, 300] = ex[20:179, 213] = 100
+        ey[20, 20:301] = ey[178, 20:301] = 100
+        (x, y, w, h), sides = snap_cam_box([60, 60, 340, 250], ex, ey, 2, W, H)
+        self.assertEqual(sides, 4)
+        self.assertAlmostEqual(x + w, 596, delta=8)
+
 
 if __name__ == '__main__':
     unittest.main()
