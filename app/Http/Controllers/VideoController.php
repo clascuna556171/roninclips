@@ -116,6 +116,8 @@ class VideoController extends Controller
             'hardware_accel' => $request->input('hardware_accel', 'auto'),
             'smart_crop' => $request->boolean('smart_crop'),
             'auto_captions' => $request->boolean('auto_captions'),
+            // Absent = true, so the existing upload form keeps burning captions
+            'burn_captions' => $request->boolean('burn_captions', true),
             'punch_in_zoom' => $request->boolean('punch_in_zoom'),
             'ken_burns' => $request->boolean('ken_burns'),
             'emoji_overlays' => $request->boolean('emoji_overlays'),

@@ -58,6 +58,7 @@ DEFAULT_SETTINGS = {
     'hardware_accel': 'auto',
     'smart_crop': True,
     'auto_captions': True,
+    'burn_captions': True,        # False: keep word timings JSON, skip burned-in ASS captions
     'punch_in_zoom': False,
     'ken_burns': False,
     'emoji_overlays': False,
@@ -893,6 +894,11 @@ def render_single_clip(sc, video, SETTINGS, whisper_model, encoder_flags, output
                     json.dump(all_words, f, ensure_ascii=False, indent=2)
                 print(f"  💾 Saved transcript JSON for editor: {words_json_path}")
 
+            # burn_captions off: keep the words JSON but render a caption-free clip
+            # (captions are added later by an external editor, e.g. StxicStudio)
+            if all_words and not SETTINGS.get('burn_captions', True):
+                print(f"  [Clip #{clip_id}] burn_captions off: skipping burned-in captions.")
+            elif all_words:
                 sub_w = 1080 if SETTINGS['output_format'] == '9:16' else render_w
                 sub_h = 1920 if SETTINGS['output_format'] == '9:16' else render_h
 
@@ -1148,7 +1154,7 @@ def run_pipeline():
                 db_settings = json.loads(video['processing_settings'])
                 SETTINGS.update(db_settings)
                 
-                for key in ['full_video_mode', 'smart_crop', 'auto_captions', 'punch_in_zoom', 'ken_burns',
+                for key in ['full_video_mode', 'smart_crop', 'auto_captions', 'burn_captions', 'punch_in_zoom', 'ken_burns',
                             'emoji_overlays', 'whip_pan_transitions', 'background_music', 'split_screen',
                             'gaming_layout']:
                     val = SETTINGS.get(key)
